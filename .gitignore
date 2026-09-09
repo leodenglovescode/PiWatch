@@ -1,0 +1,26 @@
+.venvs/
+__pycache__/
+*.pyc
+
+# Credentials and local environment files
+.env
+.env.*
+*.env
+secrets/
+secrets.*
+*.pem
+*.key
+
+# Runtime state and local backups
+*.sqlite3
+*.sqlite3-*
+*.db
+*.db-*
+*.log
+*.bak
+*.bak-*
+backup*/
+
+# Local agent metadata
+.agents/
+.codex/

@@ -1,0 +1,25 @@
+[Unit]
+Description=Meshtastic LoRa Notification API
+After=network.target
+
+[Service]
+Type=simple
+StateDirectory=lora-notifyd
+StateDirectoryMode=0700
+TimeoutStopSec=150
+User=piwatch-radio
+Group=piwatch-radio
+SupplementaryGroups=dialout
+
+EnvironmentFile=/etc/lora-notifyd.env
+Environment=PYTHONUNBUFFERED=1
+
+ExecStart=/opt/piwatch/.venvs/meshtastic/bin/python /opt/piwatch/lora/lora-notifyd.py
+
+Restart=always
+RestartSec=5
+
+WorkingDirectory=/opt/piwatch
+
+[Install]
+WantedBy=multi-user.target
