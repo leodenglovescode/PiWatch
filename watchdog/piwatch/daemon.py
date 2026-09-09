@@ -8,7 +8,7 @@ import time
 from .checks import check_all, ExternalChecks
 from .config import load_config
 from .config_store import SettingsStore
-from .health import health_worker
+from .health import health_worker, SystemSampler
 from .notifications.outbox import Outbox
 from .state import StateTracker
 from .status import write_status
@@ -56,6 +56,7 @@ async def run(config=None):
     health = {}
     current = {'config': config, 'revision': revision}
     started = time.monotonic()
+    system_sampler = SystemSampler()
     workers = [asyncio.create_task(outbox.work(channel)) for channel in ('ip', 'lora')]
     workers.append(asyncio.create_task(health_worker(health, stop, current)))
     next_probe = 0
@@ -107,8 +108,12 @@ async def run(config=None):
                     worker.result()
                     if not stop.is_set():
                         raise RuntimeError('background worker exited unexpectedly')
+            try:
+                metrics = system_sampler.sample()
+            except (OSError, ValueError, IndexError):
+                metrics = {'checked_at': time.time(), 'state': 'UNKNOWN'}
             write_status(results, trackers, outbox, health, config, started,
-                         revision=revision, config_error=config_error)
+                         revision=revision, config_error=config_error, metrics=metrics)
             try:
                 await asyncio.wait_for(stop.wait(), max(.05, 1 - (time.monotonic() - cycle)))
             except asyncio.TimeoutError:

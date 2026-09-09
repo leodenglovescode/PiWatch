@@ -87,6 +87,27 @@ PW.ready = fetch('/api/session', {cache: 'no-store', credentials: 'same-origin'}
     const value = await response.json(); PW.csrf = value.csrf; return value;
   });
 PW.ready.catch(PW.error);
+function applyTheme(preference) {
+  const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  document.documentElement.dataset.theme = preference === 'system' ? (dark ? 'dark' : 'light') : preference;
+  document.documentElement.dataset.themePreference = preference;
+  localStorage.setItem('piwatch-theme', preference);
+  const button = document.getElementById('theme-toggle');
+  if (button) {
+    const label = preference === 'system' ? 'System theme' : preference === 'dark' ? 'Dark theme' : 'Light theme';
+    button.textContent = label;
+    button.setAttribute('aria-label', `${label}. Activate to change theme.`);
+  }
+}
+const themeMedia = window.matchMedia('(prefers-color-scheme: dark)');
+themeMedia.addEventListener('change', () => {
+  if (document.documentElement.dataset.themePreference === 'system') applyTheme('system');
+});
+document.getElementById('theme-toggle')?.addEventListener('click', () => {
+  const current = document.documentElement.dataset.themePreference || 'system';
+  applyTheme(current === 'system' ? 'dark' : current === 'dark' ? 'light' : 'system');
+});
+applyTheme(document.documentElement.dataset.themePreference || 'system');
 document.getElementById('logout')?.addEventListener('click', async () => {
   try {await PW.request('/api/logout', {}); location.assign('/login');} catch (error) {PW.error(error);}
 });

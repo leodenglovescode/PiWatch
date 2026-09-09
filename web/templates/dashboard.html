@@ -1,11 +1,6 @@
 {% extends "base.html" %}
 {% block title %}Overview · PiWatch{% endblock %}
-{% block scripts %}<script src="/static/dashboard.js" defer></script>{% endblock %}
+{% block scripts %}<script src="/static/vendor/vue.runtime.global.prod.js" defer></script><script src="/static/dashboard.js" defer></script>{% endblock %}
 {% block content %}
-<div class="page-title"><h1>Overview</h1><div><span id="updated">Connecting…</span> <button id="refresh" class="secondary">Refresh</button></div></div>
-<div id="freshness" class="banner" role="status">Waiting for watchdog status.</div>
-<section aria-labelledby="targets-heading"><div class="section-title"><h2 id="targets-heading">Monitored services</h2><a href="/settings">Edit targets</a></div><div class="table-wrap"><table><thead><tr><th>Service</th><th>State</th><th>Checks</th><th>Last checked</th><th>Current outage</th></tr></thead><tbody id="targets"><tr><td colspan="5">Loading…</td></tr></tbody></table></div></section>
-<section aria-labelledby="health-heading"><h2 id="health-heading">Pi health</h2><div id="health" class="health-grid"><p>No sample yet.</p></div></section>
-<section aria-labelledby="delivery-heading"><h2 id="delivery-heading">Notification delivery</h2><div id="delivery" class="delivery-grid"></div><p class="muted">Radio connection and destination delivery are separate checks. LoRa jobs finish after destination acknowledgments.</p><div class="table-wrap"><table><thead><tr><th>Channel</th><th>State</th><th>Stage</th><th>Attempts</th><th>Last error</th></tr></thead><tbody id="jobs"></tbody></table></div></section>
-<section aria-labelledby="history-heading"><div class="section-title"><h2 id="history-heading">Incident history</h2><span class="muted">Latest 100 events</span></div><div class="table-wrap"><table><thead><tr><th>Time</th><th>Service</th><th>Event</th><th>Outage duration</th></tr></thead><tbody id="incidents"></tbody></table></div><p class="muted">History starts when the updated watchdog is installed. Retained for 90 days, up to 10,000 events.</p></section>
+<div id="dashboard-app" class="dashboard-app"><div class="dashboard-loading"><span class="live-dot"></span> Connecting to PiWatch…</div></div>
 {% endblock %}

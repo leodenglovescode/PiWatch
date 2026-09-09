@@ -86,6 +86,54 @@ class SettingsTests(unittest.TestCase):
 
 
 class ProbeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_gps_ignores_empty_sky_before_complete_satellite_report(self):
+        from piwatch import health
+
+        reports = [
+            {'class': 'SKY'},
+            {'class': 'TPV', 'mode': 3, 'time': '2026-09-09T00:00:00Z'},
+            {'class': 'SKY', 'nSat': 15, 'uSat': 9,
+             'satellites': [{'used': index < 9} for index in range(15)]},
+        ]
+
+        class Reader:
+            async def readline(self):
+                return (json.dumps(reports.pop(0)) + '\n').encode() if reports else b''
+
+        class Writer:
+            def write(self, value):
+                self.value = value
+
+            async def drain(self):
+                pass
+
+            def close(self):
+                pass
+
+            async def wait_closed(self):
+                pass
+
+        with patch.object(asyncio, 'open_connection', AsyncMock(return_value=(Reader(), Writer()))):
+            result = await health.gps_health()
+        self.assertEqual((result['state'], result['mode'], result['seen'], result['used']),
+                         ('UP', 3, 15, 9))
+
+    def test_system_sampler_calculates_cpu_and_network_rates(self):
+        from piwatch import health
+
+        sampler = health.SystemSampler()
+        base = {'state': 'UP', 'memory_percent': 25, 'disk_percent': 40, 'load_1m': .2}
+        with patch.object(health, '_cpu_times', side_effect=[(1000, 700), (1100, 720)]), \
+             patch.object(health, '_network_bytes', side_effect=[(1000, 2000), (2024, 4048)]), \
+             patch.object(health, 'system_health', side_effect=lambda: dict(base)), \
+             patch.object(health.time, 'monotonic', side_effect=[10, 12]), \
+             patch.object(health.time, 'time', return_value=100):
+            first = sampler.sample()
+            second = sampler.sample()
+        self.assertNotIn('cpu_percent', first)
+        self.assertEqual(second['cpu_percent'], 80.0)
+        self.assertEqual((second['network_rx_bps'], second['network_tx_bps']), (512, 1024))
+
     async def test_external_cached_results_are_not_new_failure_samples(self):
         external = checks.ExternalChecks(config())
         with patch.object(external, 'internet', AsyncMock(return_value={'healthy': False})), patch.object(external, 'dns', AsyncMock(return_value={'healthy': True})):

@@ -36,7 +36,8 @@ async def command(*args, timeout=2):
 
 
 def system_health():
-    data = {'load_1m': os.getloadavg()[0]}
+    load_1m, load_5m, load_15m = os.getloadavg()
+    data = {'load_1m': load_1m, 'load_5m': load_5m, 'load_15m': load_15m}
     try:
         memory = {line.split(':')[0]: int(line.split()[1])
                   for line in Path('/proc/meminfo').read_text().splitlines() if ':' in line}
@@ -54,6 +55,56 @@ def system_health():
                                   data.get('temperature_c', 0) >= 80 or
                                   data.get('memory_percent', 0) >= 95) else 'UP'
     return data
+
+
+def _cpu_times(path='/proc/stat'):
+    fields = Path(path).read_text().splitlines()[0].split()[1:]
+    values = [int(value) for value in fields]
+    return sum(values), values[3] + (values[4] if len(values) > 4 else 0)
+
+
+def _network_bytes(path='/proc/net/dev'):
+    received = transmitted = 0
+    for line in Path(path).read_text().splitlines()[2:]:
+        interface, _, raw = line.partition(':')
+        if not raw or interface.strip() == 'lo':
+            continue
+        fields = raw.split()
+        received += int(fields[0])
+        transmitted += int(fields[8])
+    return received, transmitted
+
+
+class SystemSampler:
+    """Collect lightweight one-second metrics without an external dependency."""
+
+    def __init__(self):
+        self.previous_cpu = None
+        self.previous_network = None
+        self.previous_time = None
+
+    def sample(self):
+        now = time.monotonic()
+        total, idle = _cpu_times()
+        received, transmitted = _network_bytes()
+        data = system_health()
+        data['checked_at'] = time.time()
+        if self.previous_cpu is not None:
+            total_delta = total - self.previous_cpu[0]
+            idle_delta = idle - self.previous_cpu[1]
+            if total_delta > 0:
+                data['cpu_percent'] = round(100 * (1 - idle_delta / total_delta), 1)
+        if self.previous_network is not None and self.previous_time is not None:
+            elapsed = now - self.previous_time
+            if elapsed > 0:
+                data['network_rx_bps'] = max(0, round((received - self.previous_network[0]) / elapsed))
+                data['network_tx_bps'] = max(0, round((transmitted - self.previous_network[1]) / elapsed))
+        data['network_rx_bytes'] = received
+        data['network_tx_bytes'] = transmitted
+        self.previous_cpu = total, idle
+        self.previous_network = received, transmitted
+        self.previous_time = now
+        return data
 
 
 async def service_health():
@@ -86,7 +137,8 @@ async def gps_health():
         writer.write(b'?WATCH={"enable":true,"json":true};\n')
         await writer.drain()
         deadline = time.monotonic() + 2
-        seen = set()
+        have_tpv = False
+        have_satellites = False
         while time.monotonic() < deadline:
             line = await asyncio.wait_for(reader.readline(), max(.01, deadline - time.monotonic()))
             if not line:
@@ -99,17 +151,23 @@ async def gps_health():
                 continue
             kind = report.get('class')
             if kind == 'TPV':
-                seen.add(kind)
+                have_tpv = True
                 data['mode'] = report.get('mode', 0)
                 data['state'] = 'UP' if data['mode'] >= 2 else 'DEGRADED'
                 data['report_at'] = time.time()
             elif kind == 'SKY':
-                seen.add(kind)
-                satellites = report.get('satellites', [])
-                data['seen'] = report.get('nSat', len(satellites))
-                data['used'] = report.get('uSat', sum(bool(s.get('used')) for s in satellites))
-            if seen == {'TPV', 'SKY'}:
+                satellites = report.get('satellites')
+                if 'nSat' in report or 'uSat' in report or isinstance(satellites, list):
+                    satellites = satellites if isinstance(satellites, list) else []
+                    data['seen'] = report.get('nSat', len(satellites))
+                    data['used'] = report.get('uSat', sum(bool(s.get('used')) for s in satellites))
+                    data['satellites_at'] = time.time()
+                    have_satellites = True
+            if have_tpv and have_satellites:
                 break
+        if data['mode'] >= 2 and not have_satellites:
+            data['state'] = 'DEGRADED'
+            data['detail'] = 'Satellite report unavailable'
     except (OSError, asyncio.TimeoutError):
         pass
     finally:

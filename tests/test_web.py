@@ -74,11 +74,17 @@ class WebTests(unittest.TestCase):
 
     def test_templates_and_static_assets_render(self):
         self.login()
-        for path in ('/','/settings','/account','/login','/static/style.css','/static/common.js','/static/dashboard.js','/static/settings.js','/static/account.js','/static/login.js'):
+        for path in ('/','/settings','/account','/login','/static/style.css','/static/theme.js',
+                     '/static/common.js','/static/dashboard.js','/static/settings.js',
+                     '/static/account.js','/static/login.js',
+                     '/static/vendor/vue.runtime.global.prod.js'):
             response = self.client.get(path)
             self.assertEqual(response.status_code, 200, path)
             self.assertIn("frame-ancestors 'none'", response.headers['Content-Security-Policy'])
             response.close()
+        dashboard = self.client.get('/').text
+        self.assertIn('/static/vendor/vue.runtime.global.prod.js', dashboard)
+        self.assertIn('id="dashboard-app"', dashboard)
 
     def test_settings_require_password_and_do_not_return_secrets(self):
         self.login()

@@ -4,13 +4,14 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="PiWatch local monitoring and configuration">
   <title>{% block title %}PiWatch{% endblock %}</title>
+  <script src="/static/theme.js"></script>
   <link rel="stylesheet" href="/static/style.css">
   <script src="/static/common.js" defer></script>
   {% block scripts %}{% endblock %}
 </head>
 <body>
 <header class="topbar"><a class="brand" href="/">PiWatch</a>
-  {% if username %}<nav aria-label="Main navigation"><a href="/" {% if request.path == '/' %}aria-current="page"{% endif %}>Overview</a><a href="/settings" {% if request.path == '/settings' %}aria-current="page"{% endif %}>Settings</a><a href="/account" {% if request.path == '/account' %}aria-current="page"{% endif %}>Account</a></nav><button id="logout" class="quiet">Sign out</button>{% endif %}
+  {% if username %}<nav aria-label="Main navigation"><a href="/" {% if request.path == '/' %}aria-current="page"{% endif %}>Overview</a><a href="/settings" {% if request.path == '/settings' %}aria-current="page"{% endif %}>Settings</a><a href="/account" {% if request.path == '/account' %}aria-current="page"{% endif %}>Account</a></nav>{% endif %}<button id="theme-toggle" class="quiet theme-toggle" type="button">Theme</button>{% if username %}<button id="logout" class="quiet">Sign out</button>{% endif %}
 </header>
 <main>{% block content %}{% endblock %}<p id="notice" class="notice" role="status" aria-live="polite"></p></main>
 {% if username %}

@@ -20,7 +20,8 @@ does not initialize devices or start threads.
 ## Panel
 
 - Overview: configured services and probes, snapshot freshness, Pi health,
-  gpsd/chrony/radio state, delivery counts and outstanding jobs, recent incidents.
+  gpsd/chrony/radio state, live CPU/memory/disk/temperature/network metrics,
+  delivery counts and outstanding jobs, and recent incidents.
 - Settings: add/edit/remove/disable monitored services; ping, TCP, and HTTP checks;
   Internet endpoints; DNS names; intervals/thresholds; LoRa, SMTP, and HA gateways.
 - Account: username/password, session timeout, authenticator-app and email 2FA,
@@ -62,6 +63,13 @@ has no effect. Secret fields left unset continue to use existing service environ
 values. The panel never reads either deployment secrets file. SMTP for email 2FA
 must be explicitly configured because the web service cannot access those files.
 
+The overview uses the locally vendored Vue 3.5.42 production runtime and render
+functions. It polls the authenticated status endpoint every two seconds and keeps
+a rolling 60-sample trend in memory while the page is open. Vue is served by the
+Pi, so the panel remains available during an Internet or DNS outage. The theme
+control cycles through system, dark, and light modes and stores only that local
+preference in the browser. Vue's license is in `web/static/vendor/VUE-LICENSE.txt`.
+
 ## Checks and freshness
 
 Internet uses TCP connections to literal IP endpoints, independently of name
@@ -89,6 +97,9 @@ not add a hardware watchdog or a systemd heartbeat.
 See [local panel deployment](deployment/WEB_PANEL.md) before installing. Live
 services are not restarted by tests. The [reliability procedure](deployment/README.md)
 still applies to delivery and rollback. Run the commands in [tests/README.md](tests/README.md).
+After the initial installation, `sudo bash deployment/update-dashboard.sh` updates
+only the watchdog and web application, makes a timestamped backup, and leaves the
+OLED and LoRa services running.
 
 Design references: [SQLite transactions/isolation](https://www.sqlite.org/isolation.html),
 [Flask web security](https://flask.palletsprojects.com/en/stable/web-security/),

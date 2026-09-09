@@ -10,7 +10,8 @@ from .health import boot_id
 STATUS_PATH = os.environ.get('PIWATCH_STATUS_PATH', '/run/piwatch/status.json')
 
 
-def write_status(results, trackers, outbox, health, config, started, path=STATUS_PATH, revision=0, config_error=None):
+def write_status(results, trackers, outbox, health, config, started, path=STATUS_PATH,
+                 revision=0, config_error=None, metrics=None):
     now = time.time()
     data = {
         'schema_version': 2,
@@ -24,6 +25,7 @@ def write_status(results, trackers, outbox, health, config, started, path=STATUS
         'monitor': {'state': 'DEGRADED' if config_error else 'UP', 'uptime_seconds': time.monotonic() - started, 'settings_revision': revision, 'config_error': config_error},
         'targets': {},
         'self_health': health,
+        'metrics': metrics or {},
         'notifications': outbox.summary(),
         'notification_jobs': outbox.attention(),
         'incidents': outbox.history(),
