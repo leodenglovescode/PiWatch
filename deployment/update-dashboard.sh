@@ -18,8 +18,16 @@ cleanup() {
     if [[ $status -ne 0 && $SERVICES_STOPPED -eq 1 ]]; then
         echo 'Update failed; restoring the installed watchdog and web panel.' >&2
         rm -rf /usr/local/lib/piwatch/piwatch /usr/local/lib/piwatch/web
-        cp -a "$PIWATCH_BACKUP/usr/local/lib/piwatch/piwatch" /usr/local/lib/piwatch/piwatch
-        cp -a "$PIWATCH_BACKUP/usr/local/lib/piwatch/web" /usr/local/lib/piwatch/web
+        if [[ -d "$PIWATCH_STAGE/installed-piwatch" ]]; then
+            mv "$PIWATCH_STAGE/installed-piwatch" /usr/local/lib/piwatch/piwatch
+        else
+            cp -a "$PIWATCH_BACKUP/usr/local/lib/piwatch/piwatch" /usr/local/lib/piwatch/piwatch
+        fi
+        if [[ -d "$PIWATCH_STAGE/installed-web" ]]; then
+            mv "$PIWATCH_STAGE/installed-web" /usr/local/lib/piwatch/web
+        else
+            cp -a "$PIWATCH_BACKUP/usr/local/lib/piwatch/web" /usr/local/lib/piwatch/web
+        fi
         systemctl start piwatch
         systemctl start piwatch-web
     fi
@@ -48,17 +56,18 @@ import shutil
 import sys
 
 stage = Path(sys.argv[1])
-shutil.copytree('watchdog/piwatch', stage / 'piwatch',
+shutil.copytree('watchdog/piwatch', stage / 'new-piwatch',
                 ignore=shutil.ignore_patterns('__pycache__'))
-shutil.copytree('web', stage / 'web', ignore=shutil.ignore_patterns('__pycache__'))
+shutil.copytree('web', stage / 'new-web', ignore=shutil.ignore_patterns('__pycache__'))
 PY
 
 SERVICES_STOPPED=1
 systemctl stop piwatch
 systemctl stop piwatch-web
-rm -rf /usr/local/lib/piwatch/piwatch /usr/local/lib/piwatch/web
-cp -a "$PIWATCH_STAGE/piwatch" /usr/local/lib/piwatch/piwatch
-cp -a "$PIWATCH_STAGE/web" /usr/local/lib/piwatch/web
+mv /usr/local/lib/piwatch/piwatch "$PIWATCH_STAGE/installed-piwatch"
+mv "$PIWATCH_STAGE/new-piwatch" /usr/local/lib/piwatch/piwatch
+mv /usr/local/lib/piwatch/web "$PIWATCH_STAGE/installed-web"
+mv "$PIWATCH_STAGE/new-web" /usr/local/lib/piwatch/web
 
 python3 - <<'PY'
 import ast
@@ -68,12 +77,23 @@ for folder in ('/usr/local/lib/piwatch/piwatch', '/usr/local/lib/piwatch/web'):
     for path in Path(folder).rglob('*.py'):
         ast.parse(path.read_text(), filename=str(path))
 PY
+PYTHONPATH=/usr/local/lib/piwatch python3 -c 'from piwatch.health import SystemSampler'
 
 systemctl start piwatch
 systemctl start piwatch-web
-systemctl is-active --quiet piwatch
-systemctl is-active --quiet piwatch-web
-curl --fail --silent --show-error http://127.0.0.1:8080/login >/dev/null
+
+WEB_READY=0
+for _ in {1..30}; do
+    if curl --fail --silent http://127.0.0.1:8080/login >/dev/null; then
+        WEB_READY=1
+        break
+    fi
+    sleep .5
+done
+if [[ $WEB_READY -ne 1 ]]; then
+    echo 'The web panel did not accept connections within 15 seconds.' >&2
+    exit 1
+fi
 
 python3 - <<'PY'
 import json
@@ -97,6 +117,9 @@ while time.monotonic() < deadline:
 else:
     raise SystemExit('Fresh status metrics did not appear within 12 seconds')
 PY
+
+systemctl is-active --quiet piwatch
+systemctl is-active --quiet piwatch-web
 
 SERVICES_STOPPED=0
 printf 'Updated. Backup: %s\nPanel remains available on its configured bind, port 8080.\n' "$PIWATCH_BACKUP"
