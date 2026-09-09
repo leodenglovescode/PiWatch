@@ -1,0 +1,162 @@
+# Local panel deployment
+
+This release changes the watchdog, radio and OLED source layout, adds live
+configuration and incident history, and introduces a separate authenticated web
+service. Nothing is uploaded. Do not install by copying only `piwatchd.py`: its
+`piwatch/` package must accompany it.
+
+## Before installing
+
+1. Run syntax and mocked tests in `tests/README.md`. No radio or email tests are
+   sent by that suite.
+2. Inspect current unit definitions and the nonsecret monitoring configuration.
+   Never read or copy `/etc/piwatch/secrets.env` or `/etc/lora-notifyd.env`.
+3. Choose a short installation window: watchdog, radio and OLED processes restart.
+   gpsd and chrony are not restarted. Existing incidents remain durable; a watchdog
+   restart resets consecutive probe counters as before.
+4. Keep both existing delivery databases. The installer takes consistent SQLite
+   backups and copies installed source/units into a private timestamped directory
+   under `/var/backups/piwatch`. The original checkout scripts from before this
+   implementation are also retained locally in `backups/pre-panel-20260909/`.
+
+## Install from an interactive terminal on the Pi
+
+```bash
+cd /opt/piwatch
+sudo bash deployment/install-local.sh
+```
+
+The installer:
+
+- Parses Python before changing production files.
+- Creates a restricted `piwatch-web` service account and `piwatch-config` group.
+- Installs an independent web virtual environment at `/opt/piwatch-web`; existing
+  OLED and Meshtastic environments are not modified.
+- Initializes the settings DB from the existing nonsecret JSON exactly once.
+  No deployment credentials are read or copied. Normal notification delivery
+  continues to use inherited service settings until overridden in the panel.
+- Prompts locally for the initial username/password, with password echo disabled.
+  There is no default login and no unauthenticated registration route.
+- Installs the watchdog package and web code under `/usr/local/lib/piwatch`.
+  OLED and radio still run from this checkout using their existing executable paths.
+- Adds a watchdog group-access drop-in and the new web unit, reloads systemd, and
+  restarts only the affected application services in notification-safe order.
+
+The listener defaults to loopback. From your computer:
+
+```bash
+ssh -N -L 8080:127.0.0.1:8080 <user>@<Pi-LAN-address>
+```
+
+Open `http://127.0.0.1:8080` in your computer's browser. The SSH tunnel protects the
+transport and avoids adding a public listener. Use your newly created credentials.
+
+For a deliberate direct LAN/VPN listener, set `PIWATCH_WEB_BIND` to that interface's
+address in a `piwatch-web.service` drop-in and restart only the web service. An
+example drop-in is:
+
+```ini
+[Service]
+Environment=PIWATCH_WEB_BIND=127.0.0.1
+Environment=PIWATCH_WEB_PORT=8080
+```
+
+Use the actual address of this Pi. Plain HTTP does not encrypt login credentials;
+use the SSH tunnel, a VPN transport, or a local HTTPS reverse proxy. For HTTPS,
+set `PIWATCH_WEB_SECURE_COOKIE=1`. Keep the backend on loopback when proxying. The
+application ignores untrusted forwarded headers and this release is scoped to
+LAN/VPN use, not direct Internet exposure.
+
+## Live configuration
+
+Use Settings to configure service names/addresses, ping/TCP/HTTP probes, enable or
+remove targets, edit intervals/thresholds, Internet endpoints, DNS names, and gateway
+settings. Saving requires the current password and an enabled second factor. Saves
+are validated and revision-checked, so a stale browser cannot overwrite newer edits.
+The panel shows when the watchdog reports the saved revision as active.
+
+New settings do not restart the watchdog. Host/probe edits reset that target's
+failure evidence; other targets retain their state. Gateway edits affect new
+incidents. Frozen queued jobs keep their previous explicit gateway overrides, so
+editing a gateway cannot redirect an existing alert midway through delivery. An
+unset field uses the watchdog's inherited environment; explicitly clearing a
+credential sets it to empty. Disable a gateway with its Enabled checkbox.
+
+The original `config.json` is only the initial import/fallback. Once the SQLite
+settings DB exists, changes to that JSON do not alter live monitoring. Radio USB
+selection, Meshtastic destination/ACK timeout, web listener address, and process
+sandbox settings remain service-level configuration requiring the affected service
+to restart. Secrets files must remain outside this repository.
+
+## Account and recovery
+
+Account allows changing username/password and request-idle session timeout
+(5–120 minutes, default 30; absolute session lifetime is 12 hours). Account or MFA
+changes invalidate other sessions. The panel polls while open, so its requests
+count as activity; closing it lets the idle timeout elapse. Logout revokes the
+server-side session even if a cookie was copied.
+
+Authenticator setup displays a locally generated QR and manual key, then requires
+a valid code. Email setup stays unavailable until complete SMTP settings are stored
+in the panel; the web process cannot inspect legacy SMTP environment secrets. Email
+setup verifies the configured recipient before enabling login codes. Both methods
+can coexist. Email login uses the verified recipient, even if the notification
+recipient is later changed. Disable/re-enable email verification to change that
+verified address. Switching on a factor produces a fresh set of eight one-use
+recovery codes; save them outside the Pi. They replace the previous set.
+
+TOTP codes cannot be reused. Email codes expire after five minutes, allow five
+attempts, and can be requested at most once per minute per source address. Login
+and sensitive-action attempts are rate-limited in SQLite across web restarts. An
+SMTP outage does not bypass MFA: use the authenticator or a recovery code.
+
+If all second factors are lost, recover through an interactive terminal on the Pi:
+
+```bash
+sudo -u piwatch-web /opt/piwatch-web/bin/python /usr/local/lib/piwatch/web/piwatch-web.py reset-account
+```
+
+This requires operating-system access as the service user/root. It changes the
+account password and revokes all sessions, challenges, and second factors. Set up
+MFA again after signing in. Passwords are hashed with scrypt; TOTP secrets and new
+gateway credentials necessarily remain usable by their services and are protected
+by private filesystem permissions. Backups containing those databases must stay
+private as well.
+
+## Verify after installation
+
+```bash
+systemctl is-active piwatch lora-notifyd piwatch-oled piwatch-web gpsd chrony
+```
+
+Sign in and check snapshot age, configured targets, the active settings revision,
+Pi health and notification counts. Save a harmless label change and confirm the
+revision becomes active without changing process IDs. Check chrony with
+`chronyc tracking` and `chronyc sources -n`. Check LoRa `/health`, including its
+`radio_connected` field. None of these proves destination delivery; ACK success,
+timeout and disconnect tests still require an intended test destination/window.
+
+Freshness reports detect stale monitor and health snapshots. They do not add a
+systemd watchdog heartbeat, hardware reboot logic, or automatic remediation.
+
+## Rollback
+
+Stop `piwatch-web`, then stop `piwatch` so notification work checkpoints before
+changing the radio service. Restore installed watchdog source/units from the
+chosen private backup and remove the newly added `piwatch.service.d/config.conf`
+if it was absent before this installation. For the original single-file radio/OLED
+versions, restore the files in `checkout-before-panel` to their original checkout
+paths. Reload systemd if unit/drop-in files changed, then restart radio, watchdog,
+and OLED in that order. Keep `piwatch-web` disabled if restoring the old watchdog.
+
+Preserve the current outbox and radio delivery databases during rollback. Their
+original tables remain compatible with the previous reliability implementation;
+the added incident table is additive. Do not restore an old delivery database just
+to roll back code: losing newer checkpoints can cause duplicates. Leave the new
+settings/auth databases privately stored for a later retry. The previous watchdog
+uses `/etc/piwatch/config.json`, so panel changes will no longer govern it.
+The previous watchdog also ignores the new frozen gateway overrides in jobs.
+Before rolling back with pending new jobs, verify that its legacy gateways match
+their intended destinations, or keep the watchdog stopped until those jobs have
+been reviewed. Keeping the database alone does not preserve the old code's routing
+behavior for newly configured gateways.

@@ -1,22 +1,17 @@
 import time
-import socket
-import json
+from metrics import get_ip, get_temp, get_uptime, get_time_source
+from gps_status import gps, gpsd_reader
+from watchdog_page import page_watchdog as draw_watchdog
 import psutil
 import subprocess
 import threading
 
 from PIL import ImageFont
-from luma.core.interface.serial import i2c
-from luma.oled.device import ssd1306
-from luma.core.render import canvas
 
 
 # --------------------------------------------------
 # OLED
 # --------------------------------------------------
-
-serial = i2c(port=1, address=0x3C)
-device = ssd1306(serial, width=128, height=64)
 
 REFRESH = 0.5
 PAGE_TIME = 5.0
@@ -33,146 +28,23 @@ def find_font(name):
     ).strip()
 
 
-FONT_PATH = find_font("DejaVu Sans")
-BOLD_PATH = find_font("DejaVu Sans:style=Bold")
+def init_display():
+    global device, canvas, FONT, FONT_BIG, FONT_CLOCK, FONT_SMALL
+    from luma.core.interface.serial import i2c
+    from luma.oled.device import ssd1306
+    from luma.core.render import canvas
+    serial = i2c(port=1, address=0x3C)
+    device = ssd1306(serial, width=128, height=64)
 
-FONT = ImageFont.truetype(FONT_PATH, 12)
-FONT_BIG = ImageFont.truetype(BOLD_PATH, 16)
-FONT_CLOCK = ImageFont.truetype(BOLD_PATH, 22)
-FONT_SMALL = ImageFont.truetype(FONT_PATH, 9)
+    FONT_PATH = find_font("DejaVu Sans")
+    BOLD_PATH = find_font("DejaVu Sans:style=Bold")
 
-
-# --------------------------------------------------
-# GPSD data
-# --------------------------------------------------
-
-gps = {
-    "mode": 0,
-    "lat": None,
-    "lon": None,
-    "time": None,
-    "hdop": None,
-    "seen": 0,
-    "used": 0,
-}
+    FONT = ImageFont.truetype(FONT_PATH, 12)
+    FONT_BIG = ImageFont.truetype(BOLD_PATH, 16)
+    FONT_CLOCK = ImageFont.truetype(BOLD_PATH, 22)
+    FONT_SMALL = ImageFont.truetype(FONT_PATH, 9)
 
 
-def gpsd_reader():
-    while True:
-        try:
-            s = socket.create_connection(
-                ("127.0.0.1", 2947),
-                timeout=5
-            )
-
-            s.sendall(
-                b'?WATCH={"enable":true,"json":true};\n'
-            )
-
-            f = s.makefile()
-
-            for line in f:
-                try:
-                    data = json.loads(line)
-                except json.JSONDecodeError:
-                    continue
-
-                cls = data.get("class")
-
-                if cls == "TPV":
-                    gps["mode"] = data.get("mode", 0)
-                    gps["lat"] = data.get("lat")
-                    gps["lon"] = data.get("lon")
-                    gps["time"] = data.get("time")
-
-                elif cls == "SKY":
-                # Some gpsd SKY reports don't include satellite counts.
-                # Only update values when they are actually present.
-                    if "nSat" in data:
-                        gps["seen"] = data["nSat"]
-
-                    if "uSat" in data:
-                        gps["used"] = data["uSat"]
-
-                    if "hdop" in data:
-                        gps["hdop"] = data["hdop"]
-
-
-        except Exception:
-            gps["mode"] = 0
-            gps["seen"] = 0
-            gps["used"] = 0
-            gps["hdop"] = None
-            time.sleep(2)
-
-
-threading.Thread(
-    target=gpsd_reader,
-    daemon=True
-).start()
-
-
-# --------------------------------------------------
-# Helpers
-# --------------------------------------------------
-
-def get_ip():
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80))
-        ip = s.getsockname()[0]
-        s.close()
-        return ip
-    except Exception:
-        return "No network"
-
-
-def get_temp():
-    try:
-        with open(
-            "/sys/class/thermal/thermal_zone0/temp"
-        ) as f:
-            return float(f.read()) / 1000
-    except Exception:
-        return 0.0
-
-
-def get_uptime():
-    seconds = int(time.time() - psutil.boot_time())
-
-    days = seconds // 86400
-    hours = (seconds % 86400) // 3600
-    minutes = (seconds % 3600) // 60
-
-    if days:
-        return f"{days}d {hours}h"
-
-    return f"{hours}h {minutes}m"
-
-
-def get_time_source():
-    try:
-        result = subprocess.check_output(
-            ["chronyc", "tracking"],
-            text=True,
-            timeout=2
-        )
-
-        for line in result.splitlines():
-            if line.startswith("Reference ID"):
-                if "(PPS)" in line:
-                    return "PPS"
-
-                if "203.107.6.88" in line:
-                    return "ALIYUN"
-
-                if "106.55.184.199" in line:
-                    return "TENCENT"
-
-        return "NTP"
-
-    except Exception:
-        return "UNKNOWN"
 
 
 # --------------------------------------------------
@@ -350,10 +222,21 @@ def page_time():
 # Main
 # --------------------------------------------------
 
-psutil.cpu_percent(interval=None)
+def page_watchdog():
+    draw_watchdog(device, FONT, FONT_BIG, PAGE_TIME, REFRESH)
 
-while True:
-    page_system()
-    page_network()
-    page_gps()
-    page_time()
+
+def main():
+    init_display()
+    threading.Thread(target=gpsd_reader, daemon=True, name='gps-reader').start()
+    psutil.cpu_percent(interval=None)
+    while True:
+        page_system()
+        page_network()
+        page_watchdog()
+        page_gps()
+        page_time()
+
+
+if __name__ == '__main__':
+    main()

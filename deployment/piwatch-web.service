@@ -1,0 +1,31 @@
+[Unit]
+Description=PiWatch Local Monitoring Panel
+After=network.target piwatch.service
+
+[Service]
+Type=simple
+User=piwatch-web
+Group=piwatch-web
+SupplementaryGroups=piwatch-config
+StateDirectory=piwatch-web
+StateDirectoryMode=0700
+WorkingDirectory=/usr/local/lib/piwatch/web
+ExecStart=/opt/piwatch-web/bin/python /usr/local/lib/piwatch/web/piwatch-web.py serve
+Environment=PYTHONUNBUFFERED=1
+Environment=PIWATCH_WEB_BIND=127.0.0.1
+Environment=PIWATCH_WEB_PORT=8080
+Environment=PIWATCH_WEB_SECURE_COOKIE=0
+UMask=0027
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/piwatch-config /var/lib/piwatch-web
+InaccessiblePaths=-/etc/piwatch/secrets.env -/etc/lora-notifyd.env -/var/lib/piwatch -/var/lib/lora-notifyd
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

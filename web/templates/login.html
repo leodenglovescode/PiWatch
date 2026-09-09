@@ -1,0 +1,9 @@
+{% extends "base.html" %}
+{% block title %}Sign in · PiWatch{% endblock %}
+{% block scripts %}<script src="/static/login.js" defer></script>{% endblock %}
+{% block content %}
+<section class="login-box"><h1>Sign in</h1>
+<form id="login-form"><label>Username<input name="username" autocomplete="username" required maxlength="64" autofocus></label><label>Password<input name="password" type="password" autocomplete="current-password" required maxlength="256"></label><button type="submit">Sign in</button></form>
+<form id="factor-form" hidden><p>Verify your sign-in.</p><label>Method<select name="method"><option value="totp">Authenticator app</option><option value="email">Email code</option><option value="recovery">Recovery code</option></select></label><button type="button" id="send-email" class="secondary" hidden>Send email code</button><label>Code<input name="code" autocomplete="one-time-code" required maxlength="128"></label><button type="submit">Verify</button><a href="/login">Start again</a></form>
+</section>
+{% endblock %}

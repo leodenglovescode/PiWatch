@@ -1,0 +1,97 @@
+# PiWatch
+
+Local monitoring, durable outage notifications, an OLED display, and a small web
+panel. Source and backups stay on the Pi; this repository is never published.
+
+## Code map
+
+| Area | Entry point | Supporting code |
+|---|---|---|
+| Monitoring | `watchdog/piwatchd.py` | `watchdog/piwatch/`: checks, state, configuration, health, status |
+| Notifications | Part of the monitoring service | `watchdog/piwatch/notifications/`: message formatting, outbox, HA, SMTP, LoRa client |
+| Radio gateway | `lora/lora-notifyd.py` | `lora/mesh_gateway/`: radio/ACK handling, delivery cache, HTTP API |
+| OLED | `oled/piwatch-oled.py` | Metrics, gpsd reader, watchdog page |
+| Web panel | `web/piwatch-web.py` | `web/piwatch_web/`, templates, static CSS/JavaScript |
+
+The existing executable names are retained to match systemd. Their roles are
+now stated in the entry-point docstrings. Importing the OLED or radio modules
+does not initialize devices or start threads.
+
+## Panel
+
+- Overview: configured services and probes, snapshot freshness, Pi health,
+  gpsd/chrony/radio state, delivery counts and outstanding jobs, recent incidents.
+- Settings: add/edit/remove/disable monitored services; ping, TCP, and HTTP checks;
+  Internet endpoints; DNS names; intervals/thresholds; LoRa, SMTP, and HA gateways.
+- Account: username/password, session timeout, authenticator-app and email 2FA,
+  single-use recovery codes. Email setup is disabled until SMTP is explicitly
+  configured in the panel and requires verification of the recipient.
+
+A saved settings revision is applied by the monitor at its next control cycle
+(usually 1–4 seconds, allowing in-flight probes to finish). The panel distinguishes
+saved settings from the revision the monitor has actually applied. Existing jobs
+retain their gateway overrides, message text, and delivery checkpoints.
+
+## Storage
+
+- `/var/lib/piwatch-config/settings.sqlite3`: current validated settings and a
+  bounded revision audit (no old setting values). Owned by `piwatch-web`, readable
+  by the monitor through the `piwatch-config` group. Explicit gateway credentials
+  are stored here with restricted filesystem permissions and never returned by
+  the settings API. Blank credential inputs preserve the current value; the
+  explicit clear checkbox stores an empty credential.
+- `/var/lib/piwatch-web/auth.sqlite3`: password hashes, revocable sessions,
+  second-factor secrets, hashed recovery codes, expiring challenges, attempt limits.
+  Private to the web service. `session.key` signs its cookies.
+- `/var/lib/piwatch/outbox.sqlite3`: existing delivery queue and tracker states,
+  plus transactional incident history. New explicit gateway overrides are frozen
+  in private job payloads. Deployment environment secrets are never imported into
+  either database by the migration.
+- `/var/lib/lora-notifyd/delivery.sqlite3`: existing confirmed-delivery cache.
+- `/run/piwatch/status.json`: replaceable public status snapshot with no gateway
+  credentials or message bodies. Includes the newest 100 incidents and 50
+  outstanding jobs so the panel needs no outbox access.
+
+History is capped at 10,000 events; records older than 90 days are pruned when new
+incidents are recorded. Completed/failed delivery records are retained separately.
+Historical outages cannot be reconstructed automatically from the old job table.
+
+The monitor can still start from `/etc/piwatch/config.json` before the settings DB
+is initialized. Once initialized, SQLite is authoritative; editing the old JSON
+has no effect. Secret fields left unset continue to use existing service environment
+values. The panel never reads either deployment secrets file. SMTP for email 2FA
+must be explicitly configured because the web service cannot access those files.
+
+## Checks and freshness
+
+Internet uses TCP connections to literal IP endpoints, independently of name
+resolution. The default endpoints are `1.1.1.1:443` and `223.5.5.5:53`; change them
+for the local network if needed. DNS uses `getent ahostsv4`, which exercises the
+system's NSS resolver, including hosts/cache configuration. Any successful
+endpoint/name makes its respective check healthy; individual failures stay visible
+in the status data. These checks establish reachability/resolution, not unrestricted
+Internet access or authoritative DNS correctness.
+
+External checks default to 15 seconds; ordinary service checks default to the
+existing configured interval. Only new samples count toward state transitions.
+Changing a host or probe resets its evidence, while label/threshold changes keep
+its tracked state. IDs are stable and not editable in the panel; deleting a target
+retains its history and queued notifications.
+
+The watchdog writes a fresh snapshot every control cycle, even between slower
+probes. Readers use the boot ID and monotonic time to detect stale snapshots. Health
+sampling has its own freshness deadline. The web panel also marks cached values
+stale if its connection stops. This adds visibility into a stalled monitor; it does
+not add a hardware watchdog or a systemd heartbeat.
+
+## Installation and validation
+
+See [local panel deployment](deployment/WEB_PANEL.md) before installing. Live
+services are not restarted by tests. The [reliability procedure](deployment/README.md)
+still applies to delivery and rollback. Run the commands in [tests/README.md](tests/README.md).
+
+Design references: [SQLite transactions/isolation](https://www.sqlite.org/isolation.html),
+[Flask web security](https://flask.palletsprojects.com/en/stable/web-security/),
+[OWASP MFA guidance](https://cheatsheetseries.owasp.org/cheatsheets/Multifactor_Authentication_Cheat_Sheet.html),
+[PyOTP replay protection](https://github.com/pyauth/pyotp), and
+[Waitress deployment](https://docs.pylonsproject.org/projects/waitress/en/latest/usage.html).

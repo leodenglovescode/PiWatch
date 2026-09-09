@@ -1,9 +1,45 @@
-# Reliability validation
+# Reliability and panel validation
 
-Run `.venvs/meshtastic/bin/python -m unittest discover -s tests -v`.
-Tests import the API with a synthetic token, mock radio/network delivery, and use
-SQLite databases in temporary directories. They do not open a radio or send
-notifications. Bubblewrap may prevent asyncio cross-thread wakeups; run on the
-host if tests stall there.
+Syntax (does not start services):
 
-Syntax: `python3 -m compileall -q oled lora watchdog tests`.
+```bash
+python3 -m compileall -q oled lora watchdog web tests
+bash -n deployment/install-local.sh
+```
+
+Existing Meshtastic environment, hardware-mocked radio/outbox regressions:
+
+```bash
+.venvs/meshtastic/bin/python -m unittest discover -s tests -p test_reliability.py -v
+```
+
+Monitoring/configuration/history tests use only the standard library:
+
+```bash
+python3 -m unittest discover -s tests -p test_monitoring.py -v
+```
+
+For web tests, install dependencies in a new temporary environment, not in either
+existing hardware environment:
+
+```bash
+python3 -m venv /tmp/piwatch-web-tests
+/tmp/piwatch-web-tests/bin/python -m pip install -r web/requirements.txt
+/tmp/piwatch-web-tests/bin/python -m unittest discover -s tests -p test_web.py -v
+```
+
+`unittest discover -s tests -v` runs all available tests. Panel tests explicitly skip
+when Flask/PyOTP/QR dependencies are absent; do not count that as panel validation.
+Bubblewrap can prevent asyncio cross-thread wakeups; run the mocked suites on the
+host if they stall there.
+
+Tests use temporary databases, synthetic passwords/tokens, mocked radio/network
+functions and mocked email sends. They cover durable delivery/ACK handling, radio
+subscription startup, history transactions, revision conflicts, secret redaction,
+config reload without restart, target reconciliation, external probe sampling,
+password/CSRF/session protection, TOTP replay rejection, verified email challenges,
+recovery-code single use and stale status detection. They do not open hardware,
+read deployment secret files, or send notifications.
+
+After an authorized deployment, hardware validation still needs an intended test
+window/destination. Follow `deployment/WEB_PANEL.md` and `deployment/README.md`.

@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="PiWatch local monitoring and configuration">
+  <title>{% block title %}PiWatch{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/common.js" defer></script>
+  {% block scripts %}{% endblock %}
+</head>
+<body>
+<header class="topbar"><a class="brand" href="/">PiWatch</a>
+  {% if username %}<nav aria-label="Main navigation"><a href="/" {% if request.path == '/' %}aria-current="page"{% endif %}>Overview</a><a href="/settings" {% if request.path == '/settings' %}aria-current="page"{% endif %}>Settings</a><a href="/account" {% if request.path == '/account' %}aria-current="page"{% endif %}>Account</a></nav><button id="logout" class="quiet">Sign out</button>{% endif %}
+</header>
+<main>{% block content %}{% endblock %}<p id="notice" class="notice" role="status" aria-live="polite"></p></main>
+{% if username %}
+<dialog id="reauth-dialog"><form id="reauth-form">
+  <h2>Confirm changes</h2><p>Enter your current password<span id="factor-description"> and verification code</span>.</p>
+  <label>Current password<input name="current_password" type="password" autocomplete="current-password" required maxlength="256"></label>
+  <div id="reauth-factor"><label>Verification method<select name="method"><option value="totp">Authenticator app</option><option value="email">Email code</option><option value="recovery">Recovery code</option></select></label>
+    <button id="reauth-send-email" type="button" class="secondary" hidden>Send email code</button>
+    <label>Code<input name="code" autocomplete="one-time-code" maxlength="128"></label>
+  </div>
+  <p id="reauth-notice" role="status"></p><div class="actions"><button type="submit">Continue</button><button id="reauth-cancel" type="button" class="secondary">Cancel</button></div>
+</form></dialog>
+{% endif %}
+</body></html>

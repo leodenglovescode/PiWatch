@@ -1,5 +1,9 @@
 # Reliability deployment
 
+For the modular monitor and authenticated panel release, use [WEB_PANEL.md](WEB_PANEL.md)
+and `install-local.sh`. The package must be installed with its entry point; the
+single-file copy procedure below describes the earlier reliability deployment.
+
 `watchdog/piwatchd.py` is the source for `/usr/local/lib/piwatch/piwatchd.py`.
 The OLED and LoRa units run scripts directly from this checkout. Unit files here
 reference existing environment files; do not copy or read their secret values.
