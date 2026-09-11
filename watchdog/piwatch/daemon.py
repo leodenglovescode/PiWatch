@@ -141,6 +141,7 @@ async def run(config=None):
                 metrics = system_sampler.sample()
             except (OSError, ValueError, IndexError):
                 metrics = {'checked_at': time.time(), 'state': 'UNKNOWN'}
+            outbox.maintain()
             write_status(results, trackers, outbox, health, config, started,
                          revision=revision, config_error=config_error, metrics=metrics)
             try:

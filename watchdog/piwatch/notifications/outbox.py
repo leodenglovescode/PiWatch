@@ -15,12 +15,17 @@ from .lora_client import lora_api_send
 log = logging.getLogger("piwatch")
 OUTBOX_PATH = os.environ.get("PIWATCH_OUTBOX_PATH", "/var/lib/piwatch/outbox.sqlite3")
 MAX_ATTEMPTS = 5
+MAINTENANCE_INTERVAL = 3 * 86400
+TERMINAL_JOB_RETENTION = 3 * 86400
+INCIDENT_RETENTION = 90 * 86400
+MAX_TERMINAL_JOBS = 5000
+MAX_INCIDENTS = 10000
 
 class Outbox:
     """Persist frozen messages and tracker state together before dispatch.
 
     Each channel has its own worker. Confirmed LoRa stages are checkpointed
-    separately; exhausted jobs remain in the database for operator review.
+    separately; exhausted jobs remain available for operator review for three days.
     """
 
     def __init__(self, path=OUTBOX_PATH, is_running=lambda: True):
@@ -33,16 +38,78 @@ class Outbox:
                 id TEXT PRIMARY KEY, channel TEXT NOT NULL, payload TEXT NOT NULL,
                 stage INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,
                 next_attempt REAL NOT NULL DEFAULT 0,
-                status TEXT NOT NULL DEFAULT 'pending', last_error TEXT);
+                status TEXT NOT NULL DEFAULT 'pending', last_error TEXT,
+                created_at REAL NOT NULL DEFAULT 0, finished_at REAL);
             CREATE TABLE IF NOT EXISTS incidents (
                 id TEXT PRIMARY KEY, timestamp REAL NOT NULL,
                 target TEXT NOT NULL, state TEXT NOT NULL,
                 outage_seconds REAL, probes TEXT NOT NULL, target_name TEXT);
             CREATE INDEX IF NOT EXISTS idx_incidents_timestamp ON incidents(timestamp);
+            CREATE TABLE IF NOT EXISTS maintenance (
+                name TEXT PRIMARY KEY, completed_at REAL NOT NULL);
         """)
         if 'target_name' not in {row[1] for row in self.db.execute('PRAGMA table_info(incidents)')}:
             self.db.execute('ALTER TABLE incidents ADD COLUMN target_name TEXT')
+        job_columns = {row[1] for row in self.db.execute('PRAGMA table_info(jobs)')}
+        if 'created_at' not in job_columns:
+            self.db.execute('ALTER TABLE jobs ADD COLUMN created_at REAL NOT NULL DEFAULT 0')
+        if 'finished_at' not in job_columns:
+            self.db.execute('ALTER TABLE jobs ADD COLUMN finished_at REAL')
+        now = time.time()
+        self.db.execute(
+            "UPDATE jobs SET created_at=COALESCE((SELECT timestamp FROM incidents "
+            "WHERE incidents.id=substr(jobs.id, 1, instr(jobs.id, ':') - 1)), ?) "
+            "WHERE created_at IS NULL OR created_at=0", (now,))
+        self.db.execute(
+            "UPDATE jobs SET finished_at=created_at "
+            "WHERE status IN ('done', 'failed') AND finished_at IS NULL")
         self.db.commit()
+        self.next_maintenance = 0
+        self.maintain(now)
+
+    def maintain(self, now=None, force=False):
+        """Prune terminal deliveries without ever deleting pending work."""
+        now = time.time() if now is None else now
+        if not force and now < self.next_maintenance:
+            return False
+        row = self.db.execute(
+            "SELECT completed_at FROM maintenance WHERE name='trim'"
+        ).fetchone()
+        if not force and row and now - row[0] < MAINTENANCE_INTERVAL:
+            self.next_maintenance = row[0] + MAINTENANCE_INTERVAL
+            return False
+        try:
+            with self.db:
+                self.db.execute(
+                    "DELETE FROM jobs WHERE status IN ('done', 'failed') "
+                    "AND finished_at < ?", (now - TERMINAL_JOB_RETENTION,))
+                self.db.execute(
+                    "DELETE FROM jobs WHERE id IN (SELECT id FROM jobs "
+                    "WHERE status IN ('done', 'failed') "
+                    "ORDER BY finished_at DESC, rowid DESC LIMIT -1 OFFSET ?)",
+                    (MAX_TERMINAL_JOBS,))
+                self.db.execute("DELETE FROM incidents WHERE timestamp < ?",
+                                (now - INCIDENT_RETENTION,))
+                self.db.execute(
+                    "DELETE FROM incidents WHERE id IN (SELECT id FROM incidents "
+                    "ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?)",
+                    (MAX_INCIDENTS,))
+                self.db.execute(
+                    "INSERT INTO maintenance(name, completed_at) VALUES ('trim', ?) "
+                    "ON CONFLICT(name) DO UPDATE SET completed_at=excluded.completed_at",
+                    (now,))
+        except sqlite3.Error as exc:
+            log.warning('Outbox pruning failed: %s', type(exc).__name__)
+            self.next_maintenance = now + 3600
+            return False
+        try:
+            self.db.execute('PRAGMA optimize')
+            self.db.execute('VACUUM')
+        except sqlite3.Error as exc:
+            # Pruning is already committed; retry compaction on the next cycle.
+            log.warning('Outbox compaction failed: %s', type(exc).__name__)
+        self.next_maintenance = now + MAINTENANCE_INTERVAL
+        return True
 
     def restore(self, trackers):
         for name, data in self.db.execute("SELECT name, data FROM trackers"):
@@ -105,13 +172,9 @@ class Outbox:
                         if channel == 'smtp' and not gateways['smtp']['enabled']:
                             continue
                         payload['gateways'] = gateways
-                    self.db.execute("INSERT INTO jobs (id, channel, payload) VALUES (?, ?, ?)",
-                                    (incident_id + ":" + channel, channel, json.dumps(payload)))
-            if incidents:
-                # Bound history independently of delivery records; never delete jobs here.
-                self.db.execute("DELETE FROM incidents WHERE timestamp < ?", (time.time() - 90 * 86400,))
-                self.db.execute("DELETE FROM incidents WHERE id IN "
-                                "(SELECT id FROM incidents ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET 10000)")
+                    self.db.execute(
+                        "INSERT INTO jobs (id, channel, payload, created_at) VALUES (?, ?, ?, ?)",
+                        (incident_id + ":" + channel, channel, json.dumps(payload), time.time()))
 
     def history(self, limit=100):
         rows = self.db.execute(
@@ -155,7 +218,9 @@ class Outbox:
             # Count attempts before I/O so process crashes cannot retry forever.
             if attempts >= MAX_ATTEMPTS:
                 with self.db:
-                    self.db.execute("UPDATE jobs SET status='failed' WHERE id=?", (job_id,))
+                    self.db.execute(
+                        "UPDATE jobs SET status='failed', finished_at=? WHERE id=?",
+                        (time.time(), job_id))
                 continue
             with self.db:
                 self.db.execute("UPDATE jobs SET attempts=attempts+1 WHERE id=?", (job_id,))
@@ -170,8 +235,9 @@ class Outbox:
                     with self.db:
                         self.db.execute(
                             "UPDATE jobs SET stage=?, attempts=0, next_attempt=0, "
-                            "status=?, last_error=NULL WHERE id=?",
-                            (stage, "done" if stage == 2 else "pending", job_id),
+                            "status=?, last_error=NULL, finished_at=? WHERE id=?",
+                            (stage, "done" if stage == 2 else "pending",
+                             time.time() if stage == 2 else None, job_id),
                         )
                 elif channel == 'ha':
                     await send_ha_webhook(
@@ -180,8 +246,9 @@ class Outbox:
                            if 'gateways' in payload else {}),
                     )
                     with self.db:
-                        self.db.execute("UPDATE jobs SET status='done', last_error=NULL WHERE id=?",
-                                        (job_id,))
+                        self.db.execute(
+                            "UPDATE jobs SET status='done', last_error=NULL, finished_at=? WHERE id=?",
+                            (time.time(), job_id))
                 elif channel == 'smtp':
                     await send_email(
                         payload['title'], payload['message'],
@@ -189,8 +256,9 @@ class Outbox:
                            if 'gateways' in payload else {}),
                     )
                     with self.db:
-                        self.db.execute("UPDATE jobs SET status='done', last_error=NULL WHERE id=?",
-                                        (job_id,))
+                        self.db.execute(
+                            "UPDATE jobs SET status='done', last_error=NULL, finished_at=? WHERE id=?",
+                            (time.time(), job_id))
                 else:
                     delivered = False
                     if payload["use_ha"]:
@@ -205,8 +273,9 @@ class Outbox:
                         await send_email(payload["title"], payload["message"],
                                          **({"settings": payload["gateways"]["smtp"]} if "gateways" in payload else {}))
                     with self.db:
-                        self.db.execute("UPDATE jobs SET status='done', last_error=NULL WHERE id=?",
-                                        (job_id,))
+                        self.db.execute(
+                            "UPDATE jobs SET status='done', last_error=NULL, finished_at=? WHERE id=?",
+                            (time.time(), job_id))
                 log.info("Notification checkpoint: channel=%s job=%s stage=%s", channel, job_id, stage)
             except Exception as exc:
                 # Store only the exception type: URLs/errors can contain credentials.
@@ -214,9 +283,10 @@ class Outbox:
                 status = "failed" if attempts >= MAX_ATTEMPTS else "pending"
                 with self.db:
                     self.db.execute(
-                        "UPDATE jobs SET status=?, next_attempt=?, last_error=? WHERE id=?",
+                        "UPDATE jobs SET status=?, next_attempt=?, last_error=?, finished_at=? WHERE id=?",
                         (status, time.time() + min(300, 5 * 2 ** (attempts - 1)),
-                         type(exc).__name__, job_id),
+                         type(exc).__name__, time.time() if status == 'failed' else None,
+                         job_id),
                     )
                 log.error("Notification %s: channel=%s job=%s attempt=%s error=%s",
                           status, channel, job_id, attempts, type(exc).__name__)

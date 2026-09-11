@@ -1,6 +1,7 @@
 """Hardware-free regressions for configuration, history, and freshness."""
 import asyncio
 import copy
+from contextlib import closing
 import json
 from pathlib import Path
 import signal
@@ -279,6 +280,45 @@ class HistoryTests(unittest.TestCase):
         self.trackers['router'].last_outage_seconds = 42
         self.box.record(self.trackers, [('router','UP',self.results)])
         self.assertEqual(self.box.history()[0]['outage_seconds'], 42)
+
+    def test_three_day_maintenance_keeps_pending_work_and_recent_terminal_jobs(self):
+        now = time.time()
+        old = now - outbox.TERMINAL_JOB_RETENTION - 1
+        with self.box.db:
+            self.box.db.execute('DELETE FROM jobs')
+            self.box.db.executemany(
+                'INSERT INTO jobs(id, channel, payload, status, created_at, finished_at) '
+                'VALUES (?, ?, ?, ?, ?, ?)', (
+                    ('pending-old', 'lora', '{}', 'pending', old, None),
+                    ('done-old', 'lora', '{}', 'done', old, old),
+                    ('failed-old', 'ip', '{}', 'failed', old, old),
+                    ('done-recent', 'ip', '{}', 'done', now, now),
+                ))
+        self.assertTrue(self.box.maintain(now, force=True))
+        ids = {row[0] for row in self.box.db.execute('SELECT id FROM jobs')}
+        self.assertEqual(ids, {'pending-old', 'done-recent'})
+        self.assertFalse(self.box.maintain(now + 1))
+
+    def test_existing_outbox_schema_is_migrated_without_losing_jobs(self):
+        path = Path(self.temp.name) / 'legacy.sqlite3'
+        with closing(sqlite3.connect(path)) as db, db:
+            db.execute('CREATE TABLE jobs (id TEXT PRIMARY KEY, channel TEXT NOT NULL, '
+                       'payload TEXT NOT NULL, stage INTEGER NOT NULL DEFAULT 0, '
+                       'attempts INTEGER NOT NULL DEFAULT 0, next_attempt REAL NOT NULL DEFAULT 0, '
+                       "status TEXT NOT NULL DEFAULT 'pending', last_error TEXT)")
+            db.execute("INSERT INTO jobs(id, channel, payload, status) "
+                       "VALUES ('existing:lora', 'lora', '{}', 'failed')")
+        migrated = outbox.Outbox(path)
+        try:
+            columns = {row[1] for row in migrated.db.execute('PRAGMA table_info(jobs)')}
+            row = migrated.db.execute(
+                "SELECT status, created_at, finished_at FROM jobs WHERE id='existing:lora'"
+            ).fetchone()
+            self.assertTrue({'created_at', 'finished_at'} <= columns)
+            self.assertEqual(row[0], 'failed')
+            self.assertTrue(row[1] > 0 and row[2] > 0)
+        finally:
+            migrated.db.close()
 
     def test_mains_incident_fans_out_to_every_enabled_gateway(self):
         value = validate_config({'targets': []})

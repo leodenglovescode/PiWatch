@@ -40,19 +40,26 @@ budget. Keep the HTTP timeout above the configured ACK budget when changing it.
 USB/SDK transmission itself is synchronous and cannot be forcibly cancelled;
 client timeout does not prove that no transmission occurred.
 
-Successful request IDs are cached across service restarts. Reusing an ID with a
-different payload returns 409. Retry of an unconfirmed send can duplicate a
+Successful request IDs are cached across service restarts for seven days. Reusing
+an ID with a different payload during that window returns 409. Retry of an
+unconfirmed send can duplicate a
 message when delivery succeeded but its ACK was lost, or after a crash between
 delivery and cache commit. HA/SMTP have the same ambiguous-delivery limitation;
-this is not exactly-once delivery. Completed and failed records are retained;
-plan archival if database size becomes significant.
+this is not exactly-once delivery.
+
+Every three days, each service prunes and compacts its own delivery database. The
+watchdog removes completed and failed jobs older than three days while preserving
+pending jobs, tracker state, and the separately bounded 90-day incident history.
+The LoRa gateway removes incomplete cache entries after three days and confirmed
+request IDs after seven days. Both delivery tables also have hard row caps.
 
 Inspect aggregate queue status with a read-only SQLite query, e.g. as the service
 user: `SELECT channel, status, COUNT(*) FROM jobs GROUP BY channel, status;`.
 For an operator-approved retry of a failed job, stop `piwatch`, back up its database,
 then update only the intended job: set `status='pending'`, `attempts=0`, and
 `next_attempt=0`, keeping its ID, payload, and stage unchanged. Start `piwatch` and
-check status again. Retained failed jobs require operator follow-up.
+check status again. Failed jobs require operator follow-up during their three-day
+retention window.
 
 After deployment check unit state, status-file freshness/notification counts,
 and `GET /health` (including `radio_connected`). Hardware ACK success, timeout,
