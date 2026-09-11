@@ -17,6 +17,36 @@ from .status import write_status
 log = logging.getLogger('piwatch')
 
 
+def process_maintenance(store, outbox):
+    try:
+        requests = store.pending_maintenance()
+    except Exception as exc:
+        log.error('Could not read maintenance requests: %s', type(exc).__name__)
+        return
+    for request in requests:
+        try:
+            result = outbox.clear_records(request['action'])
+        except Exception as exc:
+            try:
+                store.finish_maintenance(request['id'], {'error': type(exc).__name__},
+                                         failed=True)
+            except Exception:
+                # The idempotent request stays pending and will retry next cycle.
+                pass
+            log.error('Maintenance request failed: action=%s error=%s',
+                      request['action'], type(exc).__name__)
+            continue
+        try:
+            store.finish_maintenance(request['id'], result)
+        except Exception as exc:
+            # Clearing is idempotent; keep the request pending for the next cycle.
+            log.error('Could not record maintenance completion: %s', type(exc).__name__)
+            continue
+        log.info('Maintenance completed: action=%s deliveries=%d incidents=%d actor=%s',
+                 request['action'], result['deliveries'], result['incidents'],
+                 request['actor'])
+
+
 def reconcile_trackers(config, previous, trackers):
     definitions = {t['id']: t for t in config['targets'] if t['enabled']}
     definitions.update({name: {'name': name.upper() if name == 'dns' else 'Internet', **config[name]}
@@ -141,6 +171,7 @@ async def run(config=None):
                 metrics = system_sampler.sample()
             except (OSError, ValueError, IndexError):
                 metrics = {'checked_at': time.time(), 'state': 'UNKNOWN'}
+            process_maintenance(store, outbox)
             outbox.maintain()
             write_status(results, trackers, outbox, health, config, started,
                          revision=revision, config_error=config_error, metrics=metrics)

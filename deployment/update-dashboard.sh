@@ -101,6 +101,9 @@ if [[ -f /etc/systemd/system/piwatch.service.d/config.conf ]]; then
     mv /etc/systemd/system/piwatch.service.d/config.conf "$PIWATCH_STAGE/installed-config.conf"
 fi
 mv "$PIWATCH_STAGE/new-config.conf" /etc/systemd/system/piwatch.service.d/config.conf
+chown piwatch-web:piwatch-config /var/lib/piwatch-config/settings.sqlite3
+chmod 2770 /var/lib/piwatch-config
+chmod 0660 /var/lib/piwatch-config/settings.sqlite3
 
 python3 - <<'PY'
 import ast

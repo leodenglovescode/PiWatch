@@ -155,4 +155,23 @@ form.addEventListener('submit', async event => {
     }; checkApplied();
   } catch (error) {PW.error(error);} finally {button.disabled = false;}
 });
+async function clearRecords(action, button, description) {
+  if (!confirm(`Clear ${description}? This cannot be undone.`)) return;
+  button.disabled = true;
+  try {
+    const result = await PW.runMaintenance(action);
+    if (result) {
+      const count = action === 'clear_deliveries' ? result.deliveries : result.incidents;
+      PW.notice(`${count} ${action === 'clear_deliveries' ? 'delivery records' : 'incidents'} cleared.`, true);
+    } else PW.notice('Clear request accepted. The watchdog will apply it shortly.', true);
+  } catch (error) {
+    PW.error(error);
+  } finally {
+    button.disabled = false;
+  }
+}
+document.getElementById('clear-deliveries').onclick = event =>
+  clearRecords('clear_deliveries', event.currentTarget, 'all completed and failed delivery records');
+document.getElementById('clear-incidents').onclick = event =>
+  clearRecords('clear_incidents', event.currentTarget, 'the full incident history');
 load().catch(PW.error);

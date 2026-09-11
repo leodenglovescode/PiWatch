@@ -79,6 +79,17 @@ const PW = {
       document.getElementById('reauth-cancel').onclick = () => dialog.close();
       dialog.onclose = () => {form.reset(); if (!submitted) reject(new Error('Cancelled'));};
     });
+  },
+  async runMaintenance(action) {
+    const credentials = await PW.reauth();
+    const queued = await PW.request('/api/maintenance', {action, ...credentials});
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      await new Promise(resolve => setTimeout(resolve, 250));
+      const status = await PW.request(`/api/maintenance/${queued.request_id}`);
+      if (status.status === 'complete') return status.result;
+      if (status.status === 'failed') throw new Error('The watchdog could not clear those records.');
+    }
+    return null;
   }
 };
 PW.ready = fetch('/api/session', {cache: 'no-store', credentials: 'same-origin'})

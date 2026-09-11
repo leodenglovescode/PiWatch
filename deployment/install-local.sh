@@ -58,7 +58,7 @@ getent group piwatch-config >/dev/null || groupadd --system piwatch-config
 id piwatch-web >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/piwatch-web --shell /usr/sbin/nologin piwatch-web
 usermod -a -G piwatch-config piwatch
 usermod -a -G piwatch-config piwatch-web
-install -d -o piwatch-web -g piwatch-config -m 2750 /var/lib/piwatch-config
+install -d -o piwatch-web -g piwatch-config -m 2770 /var/lib/piwatch-config
 install -d -o piwatch-web -g piwatch-web -m 0700 /var/lib/piwatch-web
 if [[ ! -x /opt/piwatch-web/bin/python ]]; then
     python3 -m venv /opt/piwatch-web
@@ -85,7 +85,7 @@ if not store.path.exists():
     store.initialize(load_config())
 PY
 chown piwatch-web:piwatch-config /var/lib/piwatch-config/settings.sqlite3
-chmod 0640 /var/lib/piwatch-config/settings.sqlite3
+chmod 0660 /var/lib/piwatch-config/settings.sqlite3
 # Bootstrap from staging before disrupting monitoring; getpass never echoes passwords.
 if ! runuser -u piwatch-web -- /opt/piwatch-web/bin/python -c 'from pathlib import Path; import sqlite3, sys; p=Path("/var/lib/piwatch-web/auth.sqlite3"); sys.exit(0 if p.exists() and sqlite3.connect(p).execute("SELECT COUNT(*) FROM owner").fetchone()[0] else 1)'; then
     chmod 0755 "$PIWATCH_STAGE"

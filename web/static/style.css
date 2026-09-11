@@ -196,6 +196,8 @@ dialog::backdrop { background: rgba(3, 8, 13, .68); }
 .panel-heading h2 { margin: 0; }
 .panel-meta { margin: 3px 0 0; color: var(--muted); font-size: .79rem; }
 .panel-footer { padding: 14px 23px; border-top: 1px solid var(--line); font-size: .84rem; }
+.panel-actions { display: flex; align-items: center; justify-content: space-between; gap: 18px; color: var(--muted); }
+.panel-actions button { flex: 0 0 auto; }
 .metric-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
 .metric-card { position: relative; min-height: 218px; padding: 21px 22px 17px; border-right: 1px solid var(--line); overflow: hidden; }
 .metric-card:last-child { border-right: 0; }
@@ -255,6 +257,10 @@ tbody tr:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); 
 .delivery-counts div { display: grid; padding: 10px 12px; border: 1px solid var(--line); border-radius: 7px; background: var(--surface-soft); }
 .delivery-counts strong { color: var(--ink-strong); font: 680 1.3rem/1.3 ui-monospace, SFMono-Regular, Menlo, monospace; }
 .delivery-counts span { color: var(--muted); font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; }
+.maintenance-row { display: flex; align-items: center; justify-content: space-between; gap: 24px; padding: 18px 0; border-top: 1px solid var(--line); }
+.maintenance-row h3, .maintenance-row p { margin: 0; }
+.maintenance-row p { margin-top: 5px; }
+.maintenance-row button { flex: 0 0 auto; }
 
 @keyframes live-pulse {
   0% { box-shadow: 0 0 0 0 color-mix(in srgb, var(--good) 35%, transparent); }
@@ -286,6 +292,7 @@ tbody tr:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); 
   .delivery-grid { grid-template-columns: 1fr; }
   .delivery-card { border-right: 0; border-bottom: 1px solid var(--line); }
   .delivery-card:last-child { border-bottom: 0; }
+  .panel-actions, .maintenance-row { align-items: flex-start; flex-direction: column; }
   .factor-row { align-items: flex-start; }
   .save-bar { align-items: flex-start; }
   .target-checks { gap: 12px; }

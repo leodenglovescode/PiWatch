@@ -88,6 +88,8 @@ class WebTests(unittest.TestCase):
         settings = self.client.get('/settings').text
         self.assertIn('name="battery_low_voltage"', settings)
         self.assertIn('name="mains_detection_enabled"', settings)
+        self.assertIn('id="clear-deliveries"', settings)
+        self.assertIn('id="clear-incidents"', settings)
 
     def test_settings_require_password_and_do_not_return_secrets(self):
         self.login()
@@ -98,6 +100,23 @@ class WebTests(unittest.TestCase):
         self.assertEqual(self.post('/api/settings', value, 'PUT').status_code, 200)
         self.assertNotIn('synthetic-sensitive-token', self.client.get('/api/settings').text)
         self.assertEqual(self.post('/api/settings', value, 'PUT').status_code, 409)
+
+    def test_maintenance_clear_requires_reauthentication_and_is_trackable(self):
+        self.login()
+        self.assertEqual(self.post('/api/maintenance', {
+            'action':'clear_deliveries'}).status_code, 403)
+        queued = self.post('/api/maintenance', {
+            'action':'clear_deliveries','current_password':PASSWORD})
+        self.assertEqual(queued.status_code, 202)
+        request_id = queued.json['request_id']
+        self.assertEqual(self.client.get('/api/maintenance/' + request_id).json['status'],
+                         'pending')
+        self.store.finish_maintenance(request_id, {'deliveries':3,'incidents':0})
+        status = self.client.get('/api/maintenance/' + request_id)
+        self.assertEqual(status.json['result']['deliveries'], 3)
+        self.assertEqual(status.json['status'], 'complete')
+        self.assertEqual(self.post('/api/maintenance', {
+            'action':'unknown','current_password':PASSWORD}).status_code, 400)
 
     def test_login_rate_limit(self):
         for _ in range(8):
@@ -197,6 +216,11 @@ class WebTests(unittest.TestCase):
         data = self.client.get('/api/settings').json
         data['current_password'] = PASSWORD
         self.assertEqual(self.post('/api/settings', data, 'PUT').status_code, 403)
+        self.assertEqual(self.post('/api/maintenance', {
+            'action':'clear_deliveries','current_password':PASSWORD}).status_code, 403)
+        self.assertEqual(self.post('/api/maintenance', {
+            'action':'clear_deliveries','current_password':PASSWORD,
+            'method':'recovery','code':recovery[1]}).status_code, 202)
         data.update(method='recovery',code=recovery[0])
         self.assertEqual(self.post('/api/settings', data, 'PUT').status_code, 200)
         self.assertEqual(self.post('/api/settings', data, 'PUT').status_code, 403)

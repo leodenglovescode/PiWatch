@@ -111,6 +111,30 @@ class Outbox:
         self.next_maintenance = now + MAINTENANCE_INTERVAL
         return True
 
+    def clear_records(self, action):
+        """Clear operator-visible records while preserving pending delivery work."""
+        if action not in ('clear_deliveries', 'clear_incidents', 'clear_all'):
+            raise ValueError('Unknown maintenance action')
+        clear_deliveries = action in ('clear_deliveries', 'clear_all')
+        clear_incidents = action in ('clear_incidents', 'clear_all')
+        result = {'deliveries': 0, 'incidents': 0}
+        with self.db:
+            if clear_deliveries:
+                result['deliveries'] = self.db.execute(
+                    "SELECT COUNT(*) FROM jobs WHERE status IN ('done', 'failed')"
+                ).fetchone()[0]
+                self.db.execute("DELETE FROM jobs WHERE status IN ('done', 'failed')")
+            if clear_incidents:
+                result['incidents'] = self.db.execute(
+                    'SELECT COUNT(*) FROM incidents').fetchone()[0]
+                self.db.execute('DELETE FROM incidents')
+        try:
+            self.db.execute('PRAGMA optimize')
+            self.db.execute('VACUUM')
+        except sqlite3.Error as exc:
+            log.warning('Outbox compaction after clear failed: %s', type(exc).__name__)
+        return result
+
     def restore(self, trackers):
         for name, data in self.db.execute("SELECT name, data FROM trackers"):
             if name in trackers:

@@ -92,6 +92,7 @@ const Dashboard = {
     const now = ref(Date.now());
     const connectionFailed = ref(false);
     const loading = ref(false);
+    const clearing = ref('');
     const history = ref({ cpu: [], memory: [], disk: [], temperature: [], rx: [], tx: [], load: [] });
     let pollTimer;
     let clockTimer;
@@ -145,6 +146,27 @@ const Dashboard = {
         PW.error(error);
       } finally {
         loading.value = false;
+      }
+    }
+
+    async function clearRecords(action) {
+      const deliveries = action === 'clear_deliveries';
+      const warning = deliveries
+        ? 'Clear all completed and failed delivery records? Pending alerts will be preserved.'
+        : 'Clear the full incident history? Current monitoring states will be preserved.';
+      if (!confirm(warning)) return;
+      clearing.value = action;
+      try {
+        const result = await PW.runMaintenance(action);
+        if (result) {
+          const count = deliveries ? result.deliveries : result.incidents;
+          PW.notice(`${count} ${deliveries ? 'delivery records' : 'incidents'} cleared.`, true);
+        } else PW.notice('Clear request accepted. The watchdog will apply it shortly.', true);
+        await refresh();
+      } catch (error) {
+        PW.error(error);
+      } finally {
+        clearing.value = '';
       }
     }
 
@@ -323,7 +345,14 @@ const Dashboard = {
           channel('ha', 'Mains · Home Assistant', 'Independent delivery for mains events.'),
           channel('smtp', 'Mains · email', 'Independent delivery for mains events.'),
           channel('lora', 'LoRa', 'Complete after an explicit destination acknowledgment.')]),
-        jobs.length ? table(['Channel', 'State', 'Stage', 'Attempts', 'Last error'], jobRows, '') : element('p', 'empty compact-empty', 'No pending or failed delivery jobs.')
+        jobs.length ? table(['Channel', 'State', 'Stage', 'Attempts', 'Last error'], jobRows, '') : element('p', 'empty compact-empty', 'No pending or failed delivery jobs.'),
+        element('div', 'panel-footer panel-actions', [
+          element('span', '', 'Clears completed and failed records. Pending alerts are preserved.'),
+          h('button', { class: 'danger', type: 'button',
+            disabled: clearing.value || !(notificationCounts.value.done + notificationCounts.value.failed),
+            onClick: () => clearRecords('clear_deliveries') },
+          clearing.value === 'clear_deliveries' ? 'Clearing…' : 'Clear delivery records')
+        ])
       ]);
     }
 
@@ -335,9 +364,15 @@ const Dashboard = {
         Number.isFinite(incident.probes?.voltage_v) ? `${incident.probes.voltage_v.toFixed(3)} V` : '—',
         incident.outage_seconds === null ? '—' : PW.age(incident.outage_seconds)
       ]);
-      return panel('Incident history', 'Latest 100 events · 90-day retention', table(
-        ['Time', 'Service', 'Event', 'Reading', 'Duration'], rows, 'No incidents recorded yet.'
-      ), 'incidents-panel');
+      return panel('Incident history', 'Latest 100 events · 90-day retention', [
+        table(['Time', 'Service', 'Event', 'Reading', 'Duration'], rows, 'No incidents recorded yet.'),
+        element('div', 'panel-footer panel-actions', [
+          element('span', '', 'Clears recorded events without changing current monitor state.'),
+          h('button', { class: 'danger', type: 'button', disabled: clearing.value || !rows.length,
+            onClick: () => clearRecords('clear_incidents') },
+          clearing.value === 'clear_incidents' ? 'Clearing…' : 'Clear incident history')
+        ])
+      ], 'incidents-panel');
     }
 
     function render() {

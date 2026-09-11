@@ -97,6 +97,22 @@ selection, Meshtastic destination/ACK timeout, web listener address, and process
 sandbox settings remain service-level configuration requiring the affected service
 to restart. Secrets files must remain outside this repository.
 
+## Clearing test records
+
+The Overview notification and incident panels, and the Stored records section in
+Settings, can clear completed/failed delivery records or incident history. Each
+action requires the current password and any enabled second factor. The web service
+places a validated request in the shared settings database; the watchdog performs
+the deletion because the panel cannot access its private outbox database. Only the
+`piwatch-web` and `piwatch` service accounts share write access to this control data
+through the `piwatch-config` group.
+
+Clearing delivery records removes completed and failed jobs, which resets retained
+delivery errors on the dashboard. Pending jobs are preserved. Clearing incident
+history does not reset live target states, outage timers, learned UPS direction, or
+pending notifications. Both actions are intended for removing test data without
+weakening current monitoring.
+
 ## Account and recovery
 
 Account allows changing username/password and request-idle session timeout

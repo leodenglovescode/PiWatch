@@ -220,6 +220,20 @@ def create_app(state_dir=None, settings_path=None, status_path=None, secure_cook
             return jsonify(error=str(exc)), 409
         return jsonify(ok=True, revision=revision)
 
+    @app.post('/api/maintenance')
+    def request_maintenance():
+        data = body()
+        require_reauth(data)
+        request_id = settings.request_maintenance(data.get('action'), g.owner['username'])
+        return jsonify(ok=True, request_id=request_id), 202
+
+    @app.get('/api/maintenance/<request_id>')
+    def maintenance_status(request_id):
+        value = settings.maintenance_status(request_id)
+        if value is None:
+            abort(404, description='Maintenance request not found')
+        return jsonify(value)
+
     @app.get('/api/account')
     def account():
         _, config = settings.read()

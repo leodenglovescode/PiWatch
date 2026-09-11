@@ -20,4 +20,8 @@
 <section><h2>Message gateways</h2><p class="muted">Blank fields keep the current value. Unset fields use the service’s existing configuration. Changes apply to new incidents; queued alerts keep their saved gateway settings.</p><div id="gateway-editors"></div></section>
 <div class="save-bar"><button type="submit" id="save-settings" disabled>Save settings</button><span id="save-status" role="status">Loading settings…</span></div>
 </form>
+<section><h2>Stored records</h2><p class="muted">These controls remove dashboard records created during testing. They do not change current service states or delete pending alerts.</p>
+<div class="maintenance-row"><div><h3>Notification delivery records</h3><p class="muted">Remove completed and failed deliveries so old test errors no longer affect dashboard status.</p></div><button id="clear-deliveries" type="button" class="danger">Clear delivery records</button></div>
+<div class="maintenance-row"><div><h3>Incident history</h3><p class="muted">Remove recorded outage and recovery events. Monitoring continues normally.</p></div><button id="clear-incidents" type="button" class="danger">Clear incident history</button></div>
+</section>
 {% endblock %}

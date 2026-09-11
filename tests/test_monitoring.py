@@ -83,6 +83,18 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'at least 0.04 V'):
             validate_config(value)
 
+    def test_maintenance_requests_are_durable_and_report_completion(self):
+        request_id = self.store.request_maintenance('clear_deliveries', 'owner')
+        self.assertEqual(self.store.pending_maintenance(), [
+            {'id': request_id, 'action': 'clear_deliveries', 'actor': 'owner'}])
+        self.store.finish_maintenance(request_id, {'deliveries': 4, 'incidents': 0})
+        self.assertEqual(self.store.pending_maintenance(), [])
+        status = self.store.maintenance_status(request_id)
+        self.assertEqual(status['status'], 'complete')
+        self.assertEqual(status['result']['deliveries'], 4)
+        with self.assertRaisesRegex(ValueError, 'Unknown maintenance action'):
+            self.store.request_maintenance('reset_everything', 'owner')
+
 
 class BatteryTests(unittest.TestCase):
     def settings(self, **updates):
@@ -319,6 +331,31 @@ class HistoryTests(unittest.TestCase):
             self.assertTrue(row[1] > 0 and row[2] > 0)
         finally:
             migrated.db.close()
+
+    def test_clear_records_preserves_pending_jobs_and_active_tracker_state(self):
+        self.box.record(self.trackers, [('router', 'DOWN', self.results)])
+        with self.box.db:
+            self.box.db.execute("UPDATE jobs SET status='failed', finished_at=? "
+                                "WHERE channel='ip'", (time.time(),))
+        result = self.box.clear_records('clear_all')
+        self.assertEqual(result, {'deliveries': 1, 'incidents': 1})
+        self.assertEqual(self.box.summary()['lora']['pending'], 1)
+        self.assertEqual(self.box.history(), [])
+        restored = daemon.reconcile_trackers(config(), {}, {})
+        self.box.restore(restored)
+        self.assertEqual(restored['router'].state, 'DOWN')
+
+    def test_daemon_processes_queued_clear_request(self):
+        settings = SettingsStore(Path(self.temp.name) / 'commands.sqlite3')
+        settings.initialize(config())
+        self.box.record(self.trackers, [('router', 'DOWN', self.results)])
+        with self.box.db:
+            self.box.db.execute("UPDATE jobs SET status='failed', finished_at=?",
+                                (time.time(),))
+        request_id = settings.request_maintenance('clear_deliveries', 'owner')
+        daemon.process_maintenance(settings, self.box)
+        self.assertEqual(self.box.summary()['ip']['failed'], 0)
+        self.assertEqual(settings.maintenance_status(request_id)['status'], 'complete')
 
     def test_mains_incident_fans_out_to_every_enabled_gateway(self):
         value = validate_config({'targets': []})
