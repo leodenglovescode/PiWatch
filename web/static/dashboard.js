@@ -78,6 +78,13 @@ function formatBytesPerSecond(value) {
   return `${(value / 1024 ** 3).toFixed(1)} GB/s`;
 }
 
+function deriveOverallState(isFresh, targets, notifications, monitorState) {
+  if (!isFresh) return 'STALE';
+  if (targets.down) return 'DOWN';
+  if (targets.suspect || targets.unknown || notifications.failed || monitorState !== 'UP') return 'DEGRADED';
+  return 'UP';
+}
+
 const Dashboard = {
   setup() {
     const snapshot = ref(null);
@@ -102,19 +109,16 @@ const Dashboard = {
       const values = targets.value.map(([id, value]) => targetState(id, value));
       return { total: values.length, up: values.filter(value => value === 'UP').length,
         down: values.filter(value => value === 'DOWN').length,
-        suspect: values.filter(value => value === 'SUSPECT').length };
+        suspect: values.filter(value => value === 'SUSPECT').length,
+        unknown: values.filter(value => ['UNKNOWN', 'STALE'].includes(value)).length };
     });
     const notificationCounts = computed(() => Object.values(snapshot.value?.notifications || {}).reduce(
       (counts, channel) => ({ pending: counts.pending + (channel.pending || 0),
         failed: counts.failed + (channel.failed || 0), done: counts.done + (channel.done || 0) }),
       { pending: 0, failed: 0, done: 0 }
     ));
-    const overallState = computed(() => {
-      if (!fresh.value) return 'STALE';
-      if (targetCounts.value.down || notificationCounts.value.failed) return 'DOWN';
-      if (targetCounts.value.suspect || snapshot.value?.monitor?.state !== 'UP') return 'DEGRADED';
-      return 'UP';
-    });
+    const overallState = computed(() => deriveOverallState(fresh.value, targetCounts.value,
+      notificationCounts.value, snapshot.value?.monitor?.state));
 
     function addMetricSample(metrics) {
       if (!metrics?.checked_at || metrics.checked_at === lastMetricSample) return;
@@ -180,6 +184,20 @@ const Dashboard = {
       } else if (snapshot.value.monitor?.config_error) {
         message = 'The monitor kept its last valid settings because a reload failed.';
         state = 'warn';
+      } else if (targetCounts.value.down) {
+        message = `${targetCounts.value.down} monitored ${targetCounts.value.down === 1 ? 'target is' : 'targets are'} down.`;
+        state = 'bad';
+      } else if (targetCounts.value.suspect || targetCounts.value.unknown) {
+        const count = targetCounts.value.suspect + targetCounts.value.unknown;
+        message = `${count} monitored ${count === 1 ? 'target needs' : 'targets need'} attention.`;
+        state = 'warn';
+      } else if (notificationCounts.value.failed) {
+        const count = notificationCounts.value.failed;
+        message = `${count} notification ${count === 1 ? 'delivery failure is' : 'delivery failures are'} retained for review.`;
+        state = 'warn';
+      } else if (snapshot.value.monitor?.state !== 'UP') {
+        message = 'The monitor reports an internal health issue.';
+        state = 'warn';
       }
       return element('div', `freshness-bar freshness-${state}`, [
         element('span', 'freshness-icon', ''), element('strong', '', message),
@@ -190,13 +208,22 @@ const Dashboard = {
     function summaryCards() {
       const counts = targetCounts.value;
       const notifications = notificationCounts.value;
+      let overallNote = `${counts.up} of ${counts.total} checks healthy`;
+      if (!fresh.value) overallNote = 'Current state unavailable';
+      else if (counts.down) overallNote = `${counts.down} ${counts.down === 1 ? 'check is' : 'checks are'} down`;
+      else if (counts.suspect || counts.unknown) {
+        const attention = counts.suspect + counts.unknown;
+        overallNote = `${attention} ${attention === 1 ? 'check needs' : 'checks need'} attention`;
+      } else if (notifications.failed) {
+        overallNote = `Targets healthy · ${notifications.failed} delivery ${notifications.failed === 1 ? 'failure' : 'failures'} retained`;
+      } else if (snapshot.value?.monitor?.state !== 'UP') overallNote = 'Targets healthy · monitor needs attention';
       return element('div', 'summary-grid', [
         element('article', 'summary-card summary-primary', [element('span', 'summary-label', 'Overall status'),
           element('div', 'summary-state', statusPill(overallState.value)),
-          element('p', '', fresh.value ? `${counts.up} of ${counts.total} checks healthy` : 'Current state unavailable')]),
+          element('p', '', overallNote)]),
         element('article', 'summary-card', [element('span', 'summary-label', 'Monitored services'),
           element('strong', 'summary-value', `${counts.up}/${counts.total}`),
-          element('p', '', counts.down ? `${counts.down} down` : counts.suspect ? `${counts.suspect} need attention` : 'No active outages')]),
+          element('p', '', counts.down ? `${counts.down} down` : (counts.suspect || counts.unknown) ? `${counts.suspect + counts.unknown} need attention` : 'No active outages')]),
         element('article', 'summary-card', [element('span', 'summary-label', 'Notification queue'),
           element('strong', 'summary-value', `${notifications.pending + notifications.failed}`),
           element('p', '', `${notifications.pending} pending · ${notifications.failed} failed`)]),
