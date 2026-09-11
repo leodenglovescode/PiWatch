@@ -315,7 +315,7 @@ const Dashboard = {
       if (mains) cards.unshift(healthCard('Mains power', targetState('mains', mains), [
         ['State', mains.outage ? 'Outage inferred' : 'Present'],
         ['Shunt', Number.isFinite(mains.shunt_voltage_mv) ? `${mains.shunt_voltage_mv >= 0 ? '+' : ''}${mains.shunt_voltage_mv.toFixed(3)} mV` : 'Unavailable'],
-        ['Direction', mains.discharge_polarity === 'unlearned' ? 'Awaiting first failover' : `${mains.discharge_polarity} = discharge`],
+        ['Direction', mains.discharge_polarity === 'unlearned' ? 'No usable shunt signal' : `${mains.discharge_polarity} = discharge`],
         ['Detection', mains.detection_method ? mains.detection_method.replace('-', ' ') : 'Watching direction and voltage']
       ], 'health-mains'));
       return panel('Operational checks', 'Local hardware and service health', element('div', 'health-card-grid', cards), 'operations-panel');

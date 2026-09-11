@@ -13,8 +13,8 @@ DEFAULT_INTERNET = {'enabled': True, 'targets': [
 DEFAULT_DNS = {'enabled': True, 'names': ['example.com', 'www.baidu.com']}
 DEFAULT_BATTERY = {'enabled': True, 'bus': 3, 'address': 0x40,
                    'low_voltage_v': 3.30, 'recover_voltage_v': 3.50,
-                   'mains_detection_enabled': True, 'mains_drop_v': 0.12,
-                   'mains_recover_rise_v': 0.08, 'mains_window_seconds': 10.0,
+                   'mains_detection_enabled': True, 'mains_drop_v': 0.05,
+                   'mains_recover_rise_v': 0.05, 'mains_window_seconds': 10.0,
                    'discharge_polarity': 'auto', 'discharge_shunt_mv': 0.50}
 SECRET_FIELDS = {'lora': ('token',), 'smtp': ('password',), 'home_assistant': ('webhook_id',)}
 GATEWAY_FIELDS = {

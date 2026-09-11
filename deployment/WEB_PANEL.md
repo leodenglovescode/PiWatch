@@ -87,9 +87,10 @@ credential sets it to empty. Disable a gateway with its Enabled checkbox.
 The UPS section controls battery voltage and inferred mains monitoring. Mains
 outage/restoration differs from ordinary service alerts: each event is queued
 independently for every enabled Home Assistant, SMTP, and LoRa gateway. Automatic
-discharge direction is learned when a clear voltage drop coincides with a shunt
-signal; the voltage-drop and recovery-rise settings remain a fallback because the
-INA219 does not directly know whether household power is present.
+discharge direction is learned when a clear voltage drop coincides with a usable
+shunt signal. With this Pi's voltage-only wiring, mains detection uses a 0.05 V
+drop and recovery rise; the measured failover edge was 0.072 V and powered noise
+spanned 0.020 V. The INA219 does not directly know whether household power is present.
 
 The original `config.json` is only the initial import/fallback. Once the SQLite
 settings DB exists, changes to that JSON do not alter live monitoring. Radio USB

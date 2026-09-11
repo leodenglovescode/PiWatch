@@ -79,6 +79,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual((value['battery']['bus'], value['battery']['address']), (3, 0x40))
         self.assertEqual((value['battery']['low_voltage_v'], value['battery']['recover_voltage_v']),
                          (3.3, 3.5))
+        self.assertEqual((value['battery']['mains_drop_v'],
+                          value['battery']['mains_recover_rise_v']), (0.05, 0.05))
         value['battery']['recover_voltage_v'] = 3.31
         with self.assertRaisesRegex(ValueError, 'at least 0.04 V'):
             validate_config(value)
@@ -147,6 +149,21 @@ class BatteryTests(unittest.TestCase):
         self.assertEqual([sample['healthy'] for sample in samples], [True, False, False, True])
         self.assertEqual(samples[1]['detection_method'], 'voltage-drop')
         self.assertEqual(samples[1]['discharge_polarity'], 'unlearned')
+
+    def test_captured_ups_failover_exceeds_noise_and_recovers(self):
+        # September 11 hardware trace: powered noise spanned 20 mV, failover
+        # dropped 72 mV, and restoration rose 72 mV with no usable shunt signal.
+        readings = iter(((3.736, -0.03), (3.716, 0.00), (3.736, -0.02),
+                         (3.664, -0.03), (3.656, 0.00), (3.648, -0.01),
+                         (3.720, -0.04)))
+        monitor = BatteryMonitor(reader=lambda *_: dict(
+            zip(('voltage_v', 'shunt_voltage_mv'), next(readings))))
+        with patch('piwatch.battery.time.monotonic', side_effect=range(7)):
+            samples = [monitor.sample(self.settings())['mains'] for _ in range(7)]
+        self.assertTrue(all(sample['healthy'] for sample in samples[:3]))
+        self.assertTrue(all(not sample['healthy'] for sample in samples[3:6]))
+        self.assertEqual(samples[3]['detection_method'], 'voltage-drop')
+        self.assertTrue(samples[6]['healthy'])
 
     def test_unavailable_sensor_does_not_create_a_failure_sample(self):
         def unavailable(*_):

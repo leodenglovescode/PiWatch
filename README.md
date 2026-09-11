@@ -68,8 +68,10 @@ The UPS monitor reads the INA219 bus and signed shunt-voltage registers directly
 through `/dev/i2c-3`; it does not invoke `sudo` or depend on a Python sensor package.
 The default 1S thresholds are 3.30 V low and 3.50 V recovered. The normal transition
 counters debounce the alarm, and the separate recovery threshold prevents chatter
-from voltage sag. Mains detection prefers a learned or configured discharge
-direction, with a 0.12 V drop over 10 seconds as the initial/fallback signal.
+from voltage sag. Mains detection uses a configured discharge direction when the
+INA219 shunt is wired in series, with a 0.05 V drop over 10 seconds as the fallback
+signal. The threshold is based on a measured 0.072 V failover edge and 0.020 V
+powered noise span on this UPS.
 The polarity learned during an incident is preserved with tracker state.
 
 Battery events use the normal notification policy. Mains outage and restoration
