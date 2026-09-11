@@ -52,6 +52,8 @@ class Outbox:
                     continue
                 for key in ("state", "last_change", "down_since", "last_outage_seconds"):
                     setattr(trackers[name], key, saved[key])
+                if saved.get('detected_polarity') in ('positive', 'negative'):
+                    trackers[name].detected_polarity = saved['detected_polarity']
                 # Thresholds come from current config; consecutive samples restart.
                 trackers[name].failures = trackers[name].successes = 0
 
@@ -69,21 +71,38 @@ class Outbox:
                     (incident_id, time.time(), name, state,
                      trackers[name].last_outage_seconds if state == "UP" else None,
                      json.dumps({key: value for key, value in results[name].items()
-                                 if isinstance(value, bool)}), getattr(trackers[name], 'display', name)),
+                                 if isinstance(value, bool) or key in (
+                                     'voltage_v', 'low_voltage_v', 'voltage_drop_v',
+                                     'shunt_voltage_mv', 'detection_method', 'discharge_polarity')}),
+                     getattr(trackers[name], 'display', name)),
                 )
-                payloads = {
-                    "ip": {"title": title, "message": message,
-                           "severity": "critical" if state == "DOWN" else "recovery",
-                           "use_ha": ("home_assistant" not in trackers or trackers["home_assistant"].state == "UP")
-                           and not (name == "home_assistant" and state == "DOWN")},
-                    "lora": {"messages": [primary, secondary],
-                             "modes": ["alert" if state == "DOWN" else "text", "text"]},
-                }
+                severity = "critical" if state == "DOWN" else "recovery"
+                lora_payload = {"messages": [primary, secondary],
+                                "modes": ["alert" if state == "DOWN" else "text", "text"]}
+                if name == 'mains':
+                    # A power event fans out independently so one failed gateway
+                    # never suppresses or duplicates another successful delivery.
+                    payloads = {
+                        "ha": {"title": title, "message": message, "severity": severity},
+                        "smtp": {"title": title, "message": message},
+                        "lora": lora_payload,
+                    }
+                else:
+                    payloads = {
+                        "ip": {"title": title, "message": message, "severity": severity,
+                               "use_ha": ("home_assistant" not in trackers or trackers["home_assistant"].state == "UP")
+                               and not (name == "home_assistant" and state == "DOWN")},
+                        "lora": lora_payload,
+                    }
                 for channel, payload in payloads.items():
                     if gateways is not None:
                         if channel == 'lora' and not gateways['lora']['enabled']:
                             continue
                         if channel == 'ip' and not (gateways['smtp']['enabled'] or gateways['home_assistant']['enabled']):
+                            continue
+                        if channel == 'ha' and not gateways['home_assistant']['enabled']:
+                            continue
+                        if channel == 'smtp' and not gateways['smtp']['enabled']:
                             continue
                         payload['gateways'] = gateways
                     self.db.execute("INSERT INTO jobs (id, channel, payload) VALUES (?, ?, ?)",
@@ -104,7 +123,7 @@ class Outbox:
 
     def summary(self):
         counts = {channel: {status: 0 for status in ("pending", "done", "failed")}
-                  for channel in ("ip", "lora")}
+                  for channel in ("ip", "ha", "smtp", "lora")}
         for channel, status, count in self.db.execute(
             "SELECT channel, status, COUNT(*) FROM jobs GROUP BY channel, status"
         ):
@@ -154,6 +173,24 @@ class Outbox:
                             "status=?, last_error=NULL WHERE id=?",
                             (stage, "done" if stage == 2 else "pending", job_id),
                         )
+                elif channel == 'ha':
+                    await send_ha_webhook(
+                        payload['title'], payload['message'], payload['severity'],
+                        **({'settings': payload['gateways']['home_assistant']}
+                           if 'gateways' in payload else {}),
+                    )
+                    with self.db:
+                        self.db.execute("UPDATE jobs SET status='done', last_error=NULL WHERE id=?",
+                                        (job_id,))
+                elif channel == 'smtp':
+                    await send_email(
+                        payload['title'], payload['message'],
+                        **({'settings': payload['gateways']['smtp']}
+                           if 'gateways' in payload else {}),
+                    )
+                    with self.db:
+                        self.db.execute("UPDATE jobs SET status='done', last_error=NULL WHERE id=?",
+                                        (job_id,))
                 else:
                     delivered = False
                     if payload["use_ha"]:

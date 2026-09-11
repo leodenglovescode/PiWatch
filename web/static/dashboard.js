@@ -99,7 +99,7 @@ const Dashboard = {
     const healthFresh = computed(() => fresh.value && snapshot.value?.health_fresh);
     const targets = computed(() => Object.entries(snapshot.value?.targets || {}));
     const targetCounts = computed(() => {
-      const values = targets.value.map(([, value]) => value.state);
+      const values = targets.value.map(([id, value]) => targetState(id, value));
       return { total: values.length, up: values.filter(value => value === 'UP').length,
         down: values.filter(value => value === 'DOWN').length,
         suspect: values.filter(value => value === 'SUSPECT').length };
@@ -146,6 +146,7 @@ const Dashboard = {
 
     function targetState(id, value) {
       if (!fresh.value) return 'STALE';
+      if (['battery', 'mains'].includes(id) && value.available === false && value.state !== 'DOWN') return 'UNKNOWN';
       const checkAge = Date.now() / 1000 - value.checked_at;
       if (['internet', 'dns'].includes(id) &&
           (checkAge < -5 || checkAge > snapshot.value.external_stale_after_seconds)) return 'STALE';
@@ -154,9 +155,14 @@ const Dashboard = {
 
     function probeSummary(value) {
       const labels = { ping: 'Ping', ssh: 'SSH', tcp: 'TCP', http: 'HTTP', resolve: 'DNS' };
-      return Object.entries(labels).filter(([key]) => key in value).map(([key, label]) =>
+      const probes = Object.entries(labels).filter(([key]) => key in value).map(([key, label]) =>
         element('span', `probe ${value[key] ? 'probe-up' : 'probe-down'}`, `${label} ${value[key] ? 'OK' : 'FAIL'}`)
       );
+      if (Number.isFinite(value.voltage_v)) probes.push(element('span', `probe ${value.low ? 'probe-down' : 'probe-up'}`, `${value.voltage_v.toFixed(3)} V`));
+      if (Number.isFinite(value.shunt_voltage_mv)) probes.push(element('span', 'probe', `${value.shunt_voltage_mv >= 0 ? '+' : ''}${value.shunt_voltage_mv.toFixed(3)} mV`));
+      if (value.inferred && value.detection_method) probes.push(element('span', 'probe probe-down', value.detection_method === 'shunt-direction' ? 'Discharging' : `Drop ${value.voltage_drop_v.toFixed(3)} V`));
+      else if (value.available === false) probes.push(element('span', 'probe probe-down', 'Sensor unavailable'));
+      return probes;
     }
 
     function freshnessNotice() {
@@ -239,16 +245,31 @@ const Dashboard = {
       const health = snapshot.value?.self_health || {};
       const healthState = value => healthFresh.value ? value?.state : 'STALE';
       const gps = health.gps || {};
+      const battery = snapshot.value?.targets?.battery;
+      const mains = snapshot.value?.targets?.mains;
       const gpsFix = gps.mode === 3 ? '3D fix' : gps.mode === 2 ? '2D fix' : 'No fix';
       const satellites = Number.isFinite(gps.seen) && Number.isFinite(gps.used)
         ? `${gps.used} used / ${gps.seen} seen` : 'Awaiting complete SKY report';
       const serviceValues = Object.entries(health.services?.units || {});
-      return panel('Operational checks', 'Slower health samples from local services', element('div', 'health-card-grid', [
+      const cards = [
         healthCard('GPS receiver', healthState(gps), [['Fix', gpsFix], ['Satellites', satellites], ['Sample', gps.report_at ? `${PW.age(Date.now() / 1000 - gps.report_at)} ago` : '—']], 'health-gps'),
         healthCard('Time synchronization', healthState(health.time), [['Source', health.time?.source], ['Stratum', health.time?.stratum], ['Leap status', health.time?.leap_status]], 'health-time'),
         healthCard('LoRa gateway', healthState(health.radio), [['USB radio', health.radio?.radio_connected ? 'Connected' : 'Disconnected'], ['Delivery proof', 'Destination ACK'], ['Health sample', health.radio?.checked_at ? `${PW.age(Date.now() / 1000 - health.radio.checked_at)} ago` : '—']], 'health-radio'),
         healthCard('Application services', healthState(health.services), serviceValues.length ? serviceValues.map(([name, state]) => [name, state]) : [['Status', 'No sample']], 'health-services')
-      ]), 'operations-panel');
+      ];
+      if (battery) cards.unshift(healthCard('UPS battery', targetState('battery', battery), [
+        ['Voltage', Number.isFinite(battery.voltage_v) ? `${battery.voltage_v.toFixed(3)} V` : 'Unavailable'],
+        ['Low alarm', `${battery.low_voltage_v.toFixed(2)} V`],
+        ['Recovered', `${battery.recover_voltage_v.toFixed(2)} V`],
+        ['Sensor', `I²C ${battery.bus} · ${battery.address}`]
+      ], 'health-battery'));
+      if (mains) cards.unshift(healthCard('Mains power', targetState('mains', mains), [
+        ['State', mains.outage ? 'Outage inferred' : 'Present'],
+        ['Shunt', Number.isFinite(mains.shunt_voltage_mv) ? `${mains.shunt_voltage_mv >= 0 ? '+' : ''}${mains.shunt_voltage_mv.toFixed(3)} mV` : 'Unavailable'],
+        ['Direction', mains.discharge_polarity === 'unlearned' ? 'Awaiting first failover' : `${mains.discharge_polarity} = discharge`],
+        ['Detection', mains.detection_method ? mains.detection_method.replace('-', ' ') : 'Watching direction and voltage']
+      ], 'health-mains'));
+      return panel('Operational checks', 'Local hardware and service health', element('div', 'health-card-grid', cards), 'operations-panel');
     }
 
     function deliveryPanel() {
@@ -266,10 +287,14 @@ const Dashboard = {
         ]);
       };
       const jobRows = jobs.map(job => [job.channel.toUpperCase(), statusPill(job.status),
-        job.channel === 'lora' ? (job.stage === 0 ? 'Incident message' : 'Context message') : 'IP delivery',
+        job.channel === 'lora' ? (job.stage === 0 ? 'Incident message' : 'Context message') :
+          job.channel === 'ha' ? 'Home Assistant' : job.channel === 'smtp' ? 'Email' : 'IP fallback',
         `${job.attempts} / 5`, job.last_error || '—']);
       return panel('Notification delivery', `${jobs.length} jobs need attention`, [
-        element('div', 'delivery-grid', [channel('ip', 'Home Assistant / email', 'Home Assistant first, SMTP fallback.'),
+        element('div', 'delivery-grid', [
+          channel('ip', 'Standard IP alerts', 'Home Assistant first, SMTP fallback.'),
+          channel('ha', 'Mains · Home Assistant', 'Independent delivery for mains events.'),
+          channel('smtp', 'Mains · email', 'Independent delivery for mains events.'),
           channel('lora', 'LoRa', 'Complete after an explicit destination acknowledgment.')]),
         jobs.length ? table(['Channel', 'State', 'Stage', 'Attempts', 'Last error'], jobRows, '') : element('p', 'empty compact-empty', 'No pending or failed delivery jobs.')
       ]);
@@ -279,11 +304,12 @@ const Dashboard = {
       const rows = (snapshot.value?.incidents || []).map(incident => [
         new Date(incident.timestamp * 1000).toLocaleString(),
         incident.name || snapshot.value?.targets?.[incident.target]?.name || incident.target,
-        statusPill(incident.state === 'UP' ? 'RECOVERED' : incident.state),
+        statusPill(incident.state === 'UP' ? (incident.target === 'mains' ? 'RESTORED' : 'RECOVERED') : incident.target === 'battery' ? 'LOW' : incident.target === 'mains' ? 'OUTAGE' : incident.state),
+        Number.isFinite(incident.probes?.voltage_v) ? `${incident.probes.voltage_v.toFixed(3)} V` : '—',
         incident.outage_seconds === null ? '—' : PW.age(incident.outage_seconds)
       ]);
       return panel('Incident history', 'Latest 100 events · 90-day retention', table(
-        ['Time', 'Service', 'Event', 'Duration'], rows, 'No incidents recorded yet.'
+        ['Time', 'Service', 'Event', 'Reading', 'Duration'], rows, 'No incidents recorded yet.'
       ), 'incidents-panel');
     }
 

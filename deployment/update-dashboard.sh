@@ -28,6 +28,13 @@ cleanup() {
         else
             cp -a "$PIWATCH_BACKUP/usr/local/lib/piwatch/web" /usr/local/lib/piwatch/web
         fi
+        rm -f /etc/systemd/system/piwatch.service.d/config.conf
+        if [[ -f "$PIWATCH_STAGE/installed-config.conf" ]]; then
+            mv "$PIWATCH_STAGE/installed-config.conf" /etc/systemd/system/piwatch.service.d/config.conf
+        elif [[ -f "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service.d/config.conf" ]]; then
+            cp -a "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service.d/config.conf" /etc/systemd/system/piwatch.service.d/config.conf
+        fi
+        systemctl daemon-reload
         systemctl start piwatch
         systemctl start piwatch-web
     fi
@@ -47,8 +54,29 @@ for folder in ('watchdog', 'web'):
 PY
 
 install -d -m 0700 "$PIWATCH_BACKUP/usr/local/lib/piwatch"
+install -d -m 0700 "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service.d"
 cp -a /usr/local/lib/piwatch/piwatch "$PIWATCH_BACKUP/usr/local/lib/piwatch/piwatch"
 cp -a /usr/local/lib/piwatch/web "$PIWATCH_BACKUP/usr/local/lib/piwatch/web"
+if [[ -f /etc/systemd/system/piwatch.service.d/config.conf ]]; then
+    cp -a /etc/systemd/system/piwatch.service.d/config.conf "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service.d/config.conf"
+fi
+python3 - "$PIWATCH_BACKUP" <<'PY'
+from contextlib import closing
+from pathlib import Path
+import sqlite3
+import sys
+
+backup = Path(sys.argv[1])
+for raw in ('/var/lib/piwatch/outbox.sqlite3',
+            '/var/lib/piwatch-config/settings.sqlite3'):
+    source = Path(raw)
+    if source.exists():
+        target = backup / source.relative_to('/')
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with closing(sqlite3.connect(source.resolve().as_uri() + '?mode=ro', uri=True)) as src, \
+             closing(sqlite3.connect(target)) as dst:
+            src.backup(dst)
+PY
 
 python3 - "$PIWATCH_STAGE" <<'PY'
 from pathlib import Path
@@ -59,6 +87,7 @@ stage = Path(sys.argv[1])
 shutil.copytree('watchdog/piwatch', stage / 'new-piwatch',
                 ignore=shutil.ignore_patterns('__pycache__'))
 shutil.copytree('web', stage / 'new-web', ignore=shutil.ignore_patterns('__pycache__'))
+shutil.copy2('deployment/piwatch-config.conf', stage / 'new-config.conf')
 PY
 
 SERVICES_STOPPED=1
@@ -68,6 +97,10 @@ mv /usr/local/lib/piwatch/piwatch "$PIWATCH_STAGE/installed-piwatch"
 mv "$PIWATCH_STAGE/new-piwatch" /usr/local/lib/piwatch/piwatch
 mv /usr/local/lib/piwatch/web "$PIWATCH_STAGE/installed-web"
 mv "$PIWATCH_STAGE/new-web" /usr/local/lib/piwatch/web
+if [[ -f /etc/systemd/system/piwatch.service.d/config.conf ]]; then
+    mv /etc/systemd/system/piwatch.service.d/config.conf "$PIWATCH_STAGE/installed-config.conf"
+fi
+mv "$PIWATCH_STAGE/new-config.conf" /etc/systemd/system/piwatch.service.d/config.conf
 
 python3 - <<'PY'
 import ast
@@ -78,6 +111,8 @@ for folder in ('/usr/local/lib/piwatch/piwatch', '/usr/local/lib/piwatch/web'):
         ast.parse(path.read_text(), filename=str(path))
 PY
 PYTHONPATH=/usr/local/lib/piwatch python3 -c 'from piwatch.health import SystemSampler'
+systemd-analyze verify /etc/systemd/system/piwatch.service
+systemctl daemon-reload
 
 systemctl start piwatch
 systemctl start piwatch-web
@@ -106,16 +141,23 @@ while time.monotonic() < deadline:
     try:
         status = json.loads(path.read_text())
         metrics = status.get('metrics', {})
-        if time.time() - status['generated_at'] < 4 and 'cpu_percent' in metrics:
+        battery = status.get('targets', {}).get('battery')
+        battery_ready = battery is None or isinstance(battery.get('voltage_v'), (int, float))
+        if time.time() - status['generated_at'] < 4 and 'cpu_percent' in metrics and battery_ready:
             gps = status.get('self_health', {}).get('gps', {})
             print('GPS: mode={mode}, seen={seen}, used={used}'.format(
                 mode=gps.get('mode', '?'), seen=gps.get('seen', '?'), used=gps.get('used', '?')))
+            if battery:
+                print('Battery: {voltage_v:.3f} V (low {low_voltage_v:.2f} V, recover {recover_voltage_v:.2f} V)'.format(**battery))
+            mains = status.get('targets', {}).get('mains')
+            if mains:
+                print('Mains: {state} (shunt {shunt_voltage_mv:+.3f} mV, discharge polarity {discharge_polarity})'.format(**mains))
             break
     except (OSError, ValueError, KeyError):
         pass
     time.sleep(.5)
 else:
-    raise SystemExit('Fresh status metrics did not appear within 12 seconds')
+    raise SystemExit('Fresh status metrics and battery voltage did not appear within 12 seconds')
 PY
 
 systemctl is-active --quiet piwatch

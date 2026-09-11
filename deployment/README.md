@@ -21,7 +21,10 @@ Systemd creates private persistent directories:
 - `/var/lib/lora-notifyd/delivery.sqlite3`: request IDs, payload hashes, and cached
   successful results. Preserve this database when restarting or rolling back.
 
-Each notification channel runs in incident order. LoRa primary/context messages
+Each notification channel runs in incident order. Ordinary IP notifications use
+Home Assistant with SMTP fallback. Mains outage/restoration notifications instead
+use independent `ha`, `smtp`, and `lora` jobs so every enabled path is attempted.
+LoRa primary/context messages
 have separate durable checkpoints and stable request IDs. A channel/stage gets
 five attempts with 5, 10, 20, and 40 seconds between failures. Failed jobs remain
 stored; they do not prevent subsequent jobs from running. `/run/piwatch/status.json`
@@ -59,3 +62,5 @@ production outages or send test notifications without that scope.
 For rollback, stop the watchdog first, restore backed-up code and units, reload
 systemd, restart LoRa, then start the watchdog. Preserve databases; older code
 will not process the outbox or restore saved tracker states.
+It also will not process newer direct `ha` or `smtp` mains-event jobs; review those
+jobs before leaving an older watchdog version running.

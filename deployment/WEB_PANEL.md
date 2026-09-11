@@ -41,6 +41,8 @@ The installer:
   OLED and radio still run from this checkout using their existing executable paths.
 - Adds a watchdog group-access drop-in and the new web unit, reloads systemd, and
   restarts only the affected application services in notification-safe order.
+- Grants the watchdog service access to the I²C group so it can read the INA219 on
+  bus 3 without `sudo`; the device bus, address, and thresholds remain live settings.
 
 The listener defaults to loopback. From your computer:
 
@@ -70,8 +72,8 @@ LAN/VPN use, not direct Internet exposure.
 ## Live configuration
 
 Use Settings to configure service names/addresses, ping/TCP/HTTP probes, enable or
-remove targets, edit intervals/thresholds, Internet endpoints, DNS names, and gateway
-settings. Saving requires the current password and an enabled second factor. Saves
+remove targets, edit intervals/thresholds, Internet endpoints, DNS names, INA219
+battery monitoring, and gateway settings. Saving requires the current password and an enabled second factor. Saves
 are validated and revision-checked, so a stale browser cannot overwrite newer edits.
 The panel shows when the watchdog reports the saved revision as active.
 
@@ -81,6 +83,13 @@ incidents. Frozen queued jobs keep their previous explicit gateway overrides, so
 editing a gateway cannot redirect an existing alert midway through delivery. An
 unset field uses the watchdog's inherited environment; explicitly clearing a
 credential sets it to empty. Disable a gateway with its Enabled checkbox.
+
+The UPS section controls battery voltage and inferred mains monitoring. Mains
+outage/restoration differs from ordinary service alerts: each event is queued
+independently for every enabled Home Assistant, SMTP, and LoRa gateway. Automatic
+discharge direction is learned when a clear voltage drop coincides with a shunt
+signal; the voltage-drop and recovery-rise settings remain a fallback because the
+INA219 does not directly know whether household power is present.
 
 The original `config.json` is only the initial import/fallback. Once the SQLite
 settings DB exists, changes to that JSON do not alter live monitoring. Radio USB

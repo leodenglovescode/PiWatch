@@ -3,6 +3,19 @@ const form = document.getElementById('settings-form');
 let config, revision;
 const numeric = ['interval_seconds','external_interval_seconds','health_interval_seconds','suspect_after_failures','down_after_failures','recover_after_successes'];
 const targetEditors = document.getElementById('target-editors');
+function syncBatteryFields() {
+  const enabled = form.elements.battery_enabled.checked;
+  for (const input of ['battery_bus','battery_address','battery_low_voltage','battery_recover_voltage',
+    'mains_detection_enabled','discharge_polarity','discharge_shunt_mv','mains_drop_v',
+    'mains_window_seconds','mains_recover_rise_v']) {
+    form.elements[input].disabled = !enabled;
+  }
+  const mainsEnabled = enabled && form.elements.mains_detection_enabled.checked;
+  for (const input of ['discharge_polarity','discharge_shunt_mv','mains_drop_v',
+    'mains_window_seconds','mains_recover_rise_v']) form.elements[input].disabled = !mainsEnabled;
+}
+form.elements.battery_enabled.addEventListener('change', syncBatteryFields);
+form.elements.mains_detection_enabled.addEventListener('change', syncBatteryFields);
 function targetEditor(target) {
   const editor = PW.node('div', undefined, 'target-editor'); editor.dataset.id = target.id;
   editor.innerHTML = `<div class="target-heading"><label class="check"><input data-field="enabled" type="checkbox">Enabled</label><button type="button" class="danger remove-target">Remove</button></div><div class="form-grid two"><label>Service name<input data-field="name" required maxlength="40"></label><label>IP address / hostname<input data-field="host" required maxlength="253"></label></div><div class="target-checks"><div><label class="check"><input type="checkbox" data-field="ping">Ping</label></div><div><label class="check"><input type="checkbox" data-field="tcp">TCP connection</label><label>TCP port<input type="number" min="1" max="65535" data-field="tcp_port"></label></div><div><label class="check"><input type="checkbox" data-field="http">HTTP response</label><label>HTTP port<input type="number" min="1" max="65535" data-field="http_port"></label><label>HTTP path<input data-field="http_path" maxlength="1024"></label></div></div>`;
@@ -61,6 +74,18 @@ async function load() {
   for (const name of numeric) form.elements[name].value = config[name];
   form.elements.internet_enabled.checked = config.internet.enabled;
   form.elements.dns_enabled.checked = config.dns.enabled;
+  form.elements.battery_enabled.checked = config.battery.enabled;
+  form.elements.battery_bus.value = config.battery.bus;
+  form.elements.battery_address.value = `0x${config.battery.address.toString(16)}`;
+  form.elements.battery_low_voltage.value = config.battery.low_voltage_v.toFixed(2);
+  form.elements.battery_recover_voltage.value = config.battery.recover_voltage_v.toFixed(2);
+  form.elements.mains_detection_enabled.checked = config.battery.mains_detection_enabled;
+  form.elements.discharge_polarity.value = config.battery.discharge_polarity;
+  form.elements.discharge_shunt_mv.value = config.battery.discharge_shunt_mv.toFixed(2);
+  form.elements.mains_drop_v.value = config.battery.mains_drop_v.toFixed(2);
+  form.elements.mains_window_seconds.value = config.battery.mains_window_seconds;
+  form.elements.mains_recover_rise_v.value = config.battery.mains_recover_rise_v.toFixed(2);
+  syncBatteryFields();
   form.elements.internet_targets.value = config.internet.targets.map(t => `${t.host}:${t.port}`).join('\n');
   form.elements.dns_names.value = config.dns.names.join('\n');
   gatewayEditors(data.configured_secrets);
@@ -91,6 +116,16 @@ function readConfig() {
   });
   value.dns.enabled = form.elements.dns_enabled.checked;
   value.dns.names = form.elements.dns_names.value.split('\n').map(s => s.trim()).filter(Boolean);
+  value.battery = {enabled:form.elements.battery_enabled.checked,
+    bus:Number(form.elements.battery_bus.value), address:Number(form.elements.battery_address.value),
+    low_voltage_v:Number(form.elements.battery_low_voltage.value),
+    recover_voltage_v:Number(form.elements.battery_recover_voltage.value),
+    mains_detection_enabled:form.elements.mains_detection_enabled.checked,
+    discharge_polarity:form.elements.discharge_polarity.value,
+    discharge_shunt_mv:Number(form.elements.discharge_shunt_mv.value),
+    mains_drop_v:Number(form.elements.mains_drop_v.value),
+    mains_window_seconds:Number(form.elements.mains_window_seconds.value),
+    mains_recover_rise_v:Number(form.elements.mains_recover_rise_v.value)};
   for (const editor of document.querySelectorAll('[data-gateway]')) {
     const gateway = value.gateways[editor.dataset.gateway];
     for (const input of editor.querySelectorAll('[data-field]')) {

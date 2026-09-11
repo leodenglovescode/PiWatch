@@ -6,6 +6,7 @@ import signal
 import time
 
 from .checks import check_all, ExternalChecks
+from .battery import BatteryMonitor
 from .config import load_config
 from .config_store import SettingsStore
 from .health import health_worker, SystemSampler
@@ -20,8 +21,14 @@ def reconcile_trackers(config, previous, trackers):
     definitions = {t['id']: t for t in config['targets'] if t['enabled']}
     definitions.update({name: {'name': name.upper() if name == 'dns' else 'Internet', **config[name]}
                         for name in ('internet', 'dns') if config[name]['enabled']})
+    if config['battery']['enabled']:
+        definitions['battery'] = {'name': 'UPS battery', **config['battery']}
+        if config['battery']['mains_detection_enabled']:
+            definitions['mains'] = {'name': 'Mains power', **config['battery']}
     old_definitions = {t['id']: t for t in previous.get('targets', [])}
     old_definitions.update({name: previous.get(name) for name in ('internet', 'dns')})
+    old_definitions['battery'] = previous.get('battery')
+    old_definitions['mains'] = previous.get('battery')
     updated = {}
     for name, definition in definitions.items():
         old = old_definitions.get(name)
@@ -57,7 +64,14 @@ async def run(config=None):
     current = {'config': config, 'revision': revision}
     started = time.monotonic()
     system_sampler = SystemSampler()
-    workers = [asyncio.create_task(outbox.work(channel)) for channel in ('ip', 'lora')]
+    battery_monitor = BatteryMonitor(
+        battery_low=(trackers.get('battery') is not None and
+                     trackers['battery'].state in ('SUSPECT', 'DOWN')),
+        mains_out=(trackers.get('mains') is not None and
+                   trackers['mains'].state in ('SUSPECT', 'DOWN')),
+        learned_polarity=getattr(trackers.get('mains'), 'detected_polarity', None))
+    workers = [asyncio.create_task(outbox.work(channel))
+               for channel in ('ip', 'ha', 'smtp', 'lora')]
     workers.append(asyncio.create_task(health_worker(health, stop, current)))
     next_probe = 0
     results = {}
@@ -75,6 +89,13 @@ async def run(config=None):
                         config, revision = new_config, new_revision
                         current.update(config=config, revision=revision)
                         external = ExternalChecks(config)
+                        battery_monitor = BatteryMonitor(
+                            battery_low=(trackers.get('battery') is not None and
+                                         trackers['battery'].state in ('SUSPECT', 'DOWN')),
+                            mains_out=(trackers.get('mains') is not None and
+                                       trackers['mains'].state in ('SUSPECT', 'DOWN')),
+                            learned_polarity=getattr(trackers.get('mains'),
+                                                     'detected_polarity', None))
                         next_probe = 0
                         results = {}
                         local_results = {}
@@ -87,7 +108,13 @@ async def run(config=None):
             async def local_sample():
                 if sample_local:
                     values = await check_all(config)
-                    return {name: {**value, 'checked_at': time.time(), 'sampled': True} for name, value in values.items()}
+                    if config['battery']['enabled']:
+                        battery_values = await asyncio.to_thread(battery_monitor.sample, config['battery'])
+                        values['battery'] = battery_values['battery']
+                        if config['battery']['mains_detection_enabled']:
+                            values['mains'] = battery_values['mains']
+                    return {name: {'checked_at': time.time(), 'sampled': True, **value}
+                            for name, value in values.items()}
                 return {name: {**value, 'sampled': False} for name, value in local_results.items()}
             local_results, remote = await asyncio.gather(local_sample(), external.collect())
             if sample_local:
@@ -95,6 +122,8 @@ async def run(config=None):
             results = {**local_results, **remote}
             transitions = []
             for name, tracker in trackers.items():
+                if name == 'mains' and results[name].get('discharge_polarity') in ('positive', 'negative'):
+                    tracker.detected_polarity = results[name]['discharge_polarity']
                 if results[name].get('sampled', True):
                     transition = tracker.update(results[name]['healthy'])
                     if transition:

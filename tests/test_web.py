@@ -85,6 +85,9 @@ class WebTests(unittest.TestCase):
         dashboard = self.client.get('/').text
         self.assertIn('/static/vendor/vue.runtime.global.prod.js', dashboard)
         self.assertIn('id="dashboard-app"', dashboard)
+        settings = self.client.get('/settings').text
+        self.assertIn('name="battery_low_voltage"', settings)
+        self.assertIn('name="mains_detection_enabled"', settings)
 
     def test_settings_require_password_and_do_not_return_secrets(self):
         self.login()

@@ -236,7 +236,8 @@ tbody tr:hover { background: color-mix(in srgb, var(--accent) 3%, transparent); 
 .status-pill { display: inline-flex; align-items: center; gap: 7px; width: fit-content; padding: 4px 8px; border-radius: 5px; background: var(--surface-soft); color: var(--unknown); font: 680 .69rem/1.25 ui-monospace, SFMono-Regular, Menlo, monospace; letter-spacing: .045em; white-space: nowrap; }
 .status-dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 .state-up, .state-done, .state-recovered { color: var(--good); background: var(--good-soft); }
-.state-down, .state-failed { color: var(--bad); background: var(--bad-soft); }
+.state-down, .state-failed, .state-low, .state-outage { color: var(--bad); background: var(--bad-soft); }
+.state-restored { color: var(--good); background: var(--good-soft); }
 .state-suspect, .state-degraded, .state-pending, .state-stale { color: var(--warn); background: var(--warn-soft); }
 .health-card-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0; }
 .health-card { padding: 21px 23px; border-right: 1px solid var(--line); border-bottom: 1px solid var(--line); }

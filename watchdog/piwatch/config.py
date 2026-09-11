@@ -11,6 +11,11 @@ CONFIG_PATH = os.environ.get('PIWATCH_CONFIG_PATH', '/etc/piwatch/config.json')
 DEFAULT_INTERNET = {'enabled': True, 'targets': [
     {'host': '1.1.1.1', 'port': 443}, {'host': '223.5.5.5', 'port': 53}]}
 DEFAULT_DNS = {'enabled': True, 'names': ['example.com', 'www.baidu.com']}
+DEFAULT_BATTERY = {'enabled': True, 'bus': 3, 'address': 0x40,
+                   'low_voltage_v': 3.30, 'recover_voltage_v': 3.50,
+                   'mains_detection_enabled': True, 'mains_drop_v': 0.12,
+                   'mains_recover_rise_v': 0.08, 'mains_window_seconds': 10.0,
+                   'discharge_polarity': 'auto', 'discharge_shunt_mv': 0.50}
 SECRET_FIELDS = {'lora': ('token',), 'smtp': ('password',), 'home_assistant': ('webhook_id',)}
 GATEWAY_FIELDS = {
     'lora': {'enabled', 'url', 'token'},
@@ -106,6 +111,43 @@ def _validate_config(raw):
         raise ValueError('DNS requires 1–8 names')
     for name in names:
         host(name)
+    battery = config.setdefault('battery', copy.deepcopy(DEFAULT_BATTERY))
+    if not isinstance(battery, dict) or set(battery) - DEFAULT_BATTERY.keys():
+        raise ValueError('Unknown battery setting')
+    battery = config['battery'] = {**DEFAULT_BATTERY, **battery}
+    if not isinstance(battery['enabled'], bool):
+        raise ValueError('battery.enabled must be a boolean')
+    if isinstance(battery['bus'], bool) or not isinstance(battery['bus'], int) or not 0 <= battery['bus'] <= 255:
+        raise ValueError('Battery I2C bus must be an integer from 0 to 255')
+    if isinstance(battery['address'], bool) or not isinstance(battery['address'], int) or not 0x40 <= battery['address'] <= 0x4f:
+        raise ValueError('INA219 address must be between 0x40 and 0x4f')
+    for key in ('low_voltage_v', 'recover_voltage_v'):
+        value = battery[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f'battery.{key} must be a finite number')
+        battery[key] = float(value)
+    if not 2.5 <= battery['low_voltage_v'] <= 4.0:
+        raise ValueError('Battery low voltage must be between 2.50 and 4.00 V')
+    if not battery['low_voltage_v'] + 0.04 <= battery['recover_voltage_v'] <= 4.2:
+        raise ValueError('Battery recovery voltage must be at least 0.04 V above low and no more than 4.20 V')
+    if not isinstance(battery['mains_detection_enabled'], bool):
+        raise ValueError('battery.mains_detection_enabled must be a boolean')
+    if battery['discharge_polarity'] not in ('auto', 'positive', 'negative'):
+        raise ValueError('Battery discharge polarity must be auto, positive, or negative')
+    for key in ('mains_drop_v', 'mains_recover_rise_v', 'mains_window_seconds',
+                'discharge_shunt_mv'):
+        value = battery[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+            raise ValueError(f'battery.{key} must be a finite number')
+        battery[key] = float(value)
+    if not 0.04 <= battery['mains_drop_v'] <= 0.80:
+        raise ValueError('Mains detection drop must be between 0.04 and 0.80 V')
+    if not 0.04 <= battery['mains_recover_rise_v'] <= 0.80:
+        raise ValueError('Mains recovery rise must be between 0.04 and 0.80 V')
+    if not 2 <= battery['mains_window_seconds'] <= 60:
+        raise ValueError('Mains detection window must be between 2 and 60 seconds')
+    if not 0.05 <= battery['discharge_shunt_mv'] <= 100:
+        raise ValueError('Discharge shunt threshold must be between 0.05 and 100 mV')
     gateways = config.setdefault('gateways', {})
     if not isinstance(gateways, dict) or set(gateways) - GATEWAY_FIELDS.keys():
         raise ValueError('Unknown message gateway')
@@ -132,7 +174,7 @@ def _validate_config(raw):
             port(gateway['port'])
         if 'security' in gateway and gateway['security'] not in ('ssl', 'starttls'):
             raise ValueError('SMTP requires SSL or STARTTLS')
-    return {key: config[key] for key in ('targets', 'internet', 'dns', 'gateways', 'interval_seconds',
+    return {key: config[key] for key in ('targets', 'internet', 'dns', 'battery', 'gateways', 'interval_seconds',
             'external_interval_seconds', 'health_interval_seconds', 'suspect_after_failures',
             'down_after_failures', 'recover_after_successes')}
 

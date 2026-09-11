@@ -7,7 +7,7 @@ panel. Source and backups stay on the Pi; this repository is never published.
 
 | Area | Entry point | Supporting code |
 |---|---|---|
-| Monitoring | `watchdog/piwatchd.py` | `watchdog/piwatch/`: checks, state, configuration, health, status |
+| Monitoring | `watchdog/piwatchd.py` | `watchdog/piwatch/`: checks, battery sensor, state, configuration, health, status |
 | Notifications | Part of the monitoring service | `watchdog/piwatch/notifications/`: message formatting, outbox, HA, SMTP, LoRa client |
 | Radio gateway | `lora/lora-notifyd.py` | `lora/mesh_gateway/`: radio/ACK handling, delivery cache, HTTP API |
 | OLED | `oled/piwatch-oled.py` | Metrics, gpsd reader, watchdog page |
@@ -20,10 +20,11 @@ does not initialize devices or start threads.
 ## Panel
 
 - Overview: configured services and probes, snapshot freshness, Pi health,
-  gpsd/chrony/radio state, live CPU/memory/disk/temperature/network metrics,
+  gpsd/chrony/radio state, INA219 UPS voltage, live CPU/memory/disk/temperature/network metrics,
   delivery counts and outstanding jobs, and recent incidents.
 - Settings: add/edit/remove/disable monitored services; ping, TCP, and HTTP checks;
-  Internet endpoints; DNS names; intervals/thresholds; LoRa, SMTP, and HA gateways.
+  Internet endpoints; DNS names; UPS sensor and voltage thresholds; intervals/thresholds;
+  LoRa, SMTP, and HA gateways.
 - Account: username/password, session timeout, authenticator-app and email 2FA,
   single-use recovery codes. Email setup is disabled until SMTP is explicitly
   configured in the panel and requires verification of the recipient.
@@ -62,6 +63,19 @@ is initialized. Once initialized, SQLite is authoritative; editing the old JSON
 has no effect. Secret fields left unset continue to use existing service environment
 values. The panel never reads either deployment secrets file. SMTP for email 2FA
 must be explicitly configured because the web service cannot access those files.
+
+The UPS monitor reads the INA219 bus and signed shunt-voltage registers directly
+through `/dev/i2c-3`; it does not invoke `sudo` or depend on a Python sensor package.
+The default 1S thresholds are 3.30 V low and 3.50 V recovered. The normal transition
+counters debounce the alarm, and the separate recovery threshold prevents chatter
+from voltage sag. Mains detection prefers a learned or configured discharge
+direction, with a 0.12 V drop over 10 seconds as the initial/fallback signal.
+The polarity learned during an incident is preserved with tracker state.
+
+Battery events use the normal notification policy. Mains outage and restoration
+events create independent durable Home Assistant, SMTP, and LoRa jobs for every
+enabled gateway, so failure of one path does not suppress the others. The
+`piwatch` service receives I²C access through its systemd supplementary group.
 
 The overview uses the locally vendored Vue 3.5.42 production runtime and render
 functions. It polls the authenticated status endpoint every two seconds and keeps
@@ -106,3 +120,5 @@ Design references: [SQLite transactions/isolation](https://www.sqlite.org/isolat
 [OWASP MFA guidance](https://cheatsheetseries.owasp.org/cheatsheets/Multifactor_Authentication_Cheat_Sheet.html),
 [PyOTP replay protection](https://github.com/pyauth/pyotp), and
 [Waitress deployment](https://docs.pylonsproject.org/projects/waitress/en/latest/usage.html).
+Hardware references: [TI INA219 data sheet](https://www.ti.com/lit/ds/symlink/ina219.pdf)
+and [Panasonic NCR18650GA specifications](https://energy.panasonic.com/eu/business/products/lithium-ion/models/NCR18650GA).
