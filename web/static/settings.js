@@ -4,15 +4,13 @@ let config, revision;
 const numeric = ['interval_seconds','external_interval_seconds','health_interval_seconds','suspect_after_failures','down_after_failures','recover_after_successes'];
 const targetEditors = document.getElementById('target-editors');
 function syncBatteryFields() {
-  const enabled = form.elements.battery_enabled.checked;
-  for (const input of ['battery_bus','battery_address','battery_low_voltage','battery_recover_voltage',
-    'mains_detection_enabled','discharge_polarity','discharge_shunt_mv','mains_drop_v',
-    'mains_window_seconds','mains_recover_rise_v']) {
-    form.elements[input].disabled = !enabled;
-  }
-  const mainsEnabled = enabled && form.elements.mains_detection_enabled.checked;
-  for (const input of ['discharge_polarity','discharge_shunt_mv','mains_drop_v',
-    'mains_window_seconds','mains_recover_rise_v']) form.elements[input].disabled = !mainsEnabled;
+  const batteryEnabled = form.elements.battery_enabled.checked;
+  const mainsEnabled = form.elements.mains_detection_enabled.checked;
+  for (const input of ['battery_bus','battery_address'])
+    form.elements[input].disabled = !(batteryEnabled || mainsEnabled);
+  for (const input of ['battery_low_voltage','battery_recover_voltage'])
+    form.elements[input].disabled = !batteryEnabled;
+  form.elements.mains_debounce_seconds.disabled = !mainsEnabled;
 }
 form.elements.battery_enabled.addEventListener('change', syncBatteryFields);
 form.elements.mains_detection_enabled.addEventListener('change', syncBatteryFields);
@@ -80,11 +78,7 @@ async function load() {
   form.elements.battery_low_voltage.value = config.battery.low_voltage_v.toFixed(2);
   form.elements.battery_recover_voltage.value = config.battery.recover_voltage_v.toFixed(2);
   form.elements.mains_detection_enabled.checked = config.battery.mains_detection_enabled;
-  form.elements.discharge_polarity.value = config.battery.discharge_polarity;
-  form.elements.discharge_shunt_mv.value = config.battery.discharge_shunt_mv.toFixed(2);
-  form.elements.mains_drop_v.value = config.battery.mains_drop_v.toFixed(2);
-  form.elements.mains_window_seconds.value = config.battery.mains_window_seconds;
-  form.elements.mains_recover_rise_v.value = config.battery.mains_recover_rise_v.toFixed(2);
+  form.elements.mains_debounce_seconds.value = config.battery.mains_debounce_seconds;
   syncBatteryFields();
   form.elements.internet_targets.value = config.internet.targets.map(t => `${t.host}:${t.port}`).join('\n');
   form.elements.dns_names.value = config.dns.names.join('\n');
@@ -121,11 +115,7 @@ function readConfig() {
     low_voltage_v:Number(form.elements.battery_low_voltage.value),
     recover_voltage_v:Number(form.elements.battery_recover_voltage.value),
     mains_detection_enabled:form.elements.mains_detection_enabled.checked,
-    discharge_polarity:form.elements.discharge_polarity.value,
-    discharge_shunt_mv:Number(form.elements.discharge_shunt_mv.value),
-    mains_drop_v:Number(form.elements.mains_drop_v.value),
-    mains_window_seconds:Number(form.elements.mains_window_seconds.value),
-    mains_recover_rise_v:Number(form.elements.mains_recover_rise_v.value)};
+    mains_debounce_seconds:Number(form.elements.mains_debounce_seconds.value)};
   for (const editor of document.querySelectorAll('[data-gateway]')) {
     const gateway = value.gateways[editor.dataset.gateway];
     for (const input of editor.querySelectorAll('[data-field]')) {

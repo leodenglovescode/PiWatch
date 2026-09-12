@@ -146,21 +146,26 @@ while time.monotonic() < deadline:
         metrics = status.get('metrics', {})
         battery = status.get('targets', {}).get('battery')
         battery_ready = battery is None or isinstance(battery.get('voltage_v'), (int, float))
-        if time.time() - status['generated_at'] < 4 and 'cpu_percent' in metrics and battery_ready:
+        mains = status.get('targets', {}).get('mains')
+        mains_ready = (mains is None or
+                       (mains.get('state') in ('UP', 'DOWN') and
+                        isinstance(mains.get('gpio_level'), bool)))
+        if (time.time() - status['generated_at'] < 4 and 'cpu_percent' in metrics and
+                battery_ready and mains_ready):
             gps = status.get('self_health', {}).get('gps', {})
             print('GPS: mode={mode}, seen={seen}, used={used}'.format(
                 mode=gps.get('mode', '?'), seen=gps.get('seen', '?'), used=gps.get('used', '?')))
             if battery:
                 print('Battery: {voltage_v:.3f} V (low {low_voltage_v:.2f} V, recover {recover_voltage_v:.2f} V)'.format(**battery))
-            mains = status.get('targets', {}).get('mains')
             if mains:
-                print('Mains: {state} (shunt {shunt_voltage_mv:+.3f} mV, discharge polarity {discharge_polarity})'.format(**mains))
+                print('Mains: {state} (GPIO{gpio} {level}, {debounce_seconds:g} s debounce)'.format(
+                    level='HIGH' if mains['gpio_level'] else 'LOW', **mains))
             break
     except (OSError, ValueError, KeyError):
         pass
     time.sleep(.5)
 else:
-    raise SystemExit('Fresh status metrics and battery voltage did not appear within 12 seconds')
+    raise SystemExit('Fresh metrics, battery voltage, and GPIO mains state did not appear within 12 seconds')
 PY
 
 systemctl is-active --quiet piwatch

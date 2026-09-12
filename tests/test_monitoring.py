@@ -18,15 +18,16 @@ from piwatch import checks, daemon
 from piwatch.battery import BatteryMonitor, read_ina219
 from piwatch.config import validate_config
 from piwatch.config_store import SettingsStore, ConflictError
+from piwatch.mains import MainsMonitor
 from piwatch.notifications import outbox
-from piwatch.notifications.messages import build_lora_messages
+from piwatch.notifications.messages import build_lora_messages, build_message
 from piwatch.state import StateTracker
 
 
 def config():
     return validate_config({'targets': [{'id': 'router', 'name': 'Router', 'host': '192.0.2.1',
                                         'enabled': True, 'checks': [{'type': 'ping'}]}],
-                            'battery': {'enabled': False}})
+                            'battery': {'enabled': False, 'mains_detection_enabled': False}})
 
 
 class SettingsTests(unittest.TestCase):
@@ -79,11 +80,22 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual((value['battery']['bus'], value['battery']['address']), (3, 0x40))
         self.assertEqual((value['battery']['low_voltage_v'], value['battery']['recover_voltage_v']),
                          (3.3, 3.5))
-        self.assertEqual((value['battery']['mains_drop_v'],
-                          value['battery']['mains_recover_rise_v']), (0.05, 0.05))
+        self.assertEqual(value['battery']['mains_debounce_seconds'], 3.0)
         value['battery']['recover_voltage_v'] = 3.31
         with self.assertRaisesRegex(ValueError, 'at least 0.04 V'):
             validate_config(value)
+        value = validate_config({'targets': []})
+        value['battery']['mains_debounce_seconds'] = 1.9
+        with self.assertRaisesRegex(ValueError, 'between 2 and 3 seconds'):
+            validate_config(value)
+
+    def test_old_mains_inference_settings_are_removed_during_migration(self):
+        value = validate_config({'targets': [], 'battery': {
+            'mains_drop_v': .05, 'mains_recover_rise_v': .05,
+            'mains_window_seconds': 10, 'discharge_polarity': 'auto',
+            'discharge_shunt_mv': .5}})
+        self.assertEqual(value['battery']['mains_debounce_seconds'], 3.0)
+        self.assertFalse({'mains_drop_v', 'discharge_polarity'} & value['battery'].keys())
 
     def test_maintenance_requests_are_durable_and_report_completion(self):
         request_id = self.store.request_maintenance('clear_deliveries', 'owner')
@@ -107,73 +119,67 @@ class BatteryTests(unittest.TestCase):
     def test_low_voltage_uses_recovery_hysteresis(self):
         readings = iter((3.60, 3.29, 3.40, 3.51))
         monitor = BatteryMonitor(reader=lambda *_: {
-            'voltage_v': next(readings), 'shunt_voltage_mv': 0})
-        states = [monitor.sample(self.settings())['battery']['healthy'] for _ in range(4)]
+            'voltage_v': next(readings)})
+        states = [monitor.sample(self.settings())['healthy'] for _ in range(4)]
         self.assertEqual(states, [True, False, False, True])
 
-    def test_ina219_registers_are_big_endian_and_shunt_is_signed(self):
+    def test_ina219_bus_voltage_register_is_big_endian(self):
         with patch('piwatch.battery.os.open', return_value=7), \
              patch('piwatch.battery.fcntl.ioctl'), \
              patch('piwatch.battery.os.write', return_value=1), \
-             patch('piwatch.battery.os.read', side_effect=(bytes.fromhex('1c12'),
-                                                           bytes.fromhex('ff9c'))), \
+             patch('piwatch.battery.os.read', return_value=bytes.fromhex('1c12')), \
              patch('piwatch.battery.os.close'):
             reading = read_ina219(3, 0x40)
-        self.assertEqual(reading, {'voltage_v': 3.592, 'shunt_voltage_mv': -1.0})
-
-    def test_mains_detection_learns_discharge_direction_then_recovers(self):
-        readings = iter(((3.70, 0), (3.55, -10), (3.54, -9), (3.64, 0)))
-        monitor = BatteryMonitor(reader=lambda *_: dict(
-            zip(('voltage_v', 'shunt_voltage_mv'), next(readings))))
-        with patch('piwatch.battery.time.monotonic', side_effect=(0, 1, 2, 3)):
-            samples = [monitor.sample(self.settings())['mains'] for _ in range(4)]
-        self.assertTrue(samples[0]['healthy'])
-        self.assertEqual((samples[1]['healthy'], samples[1]['discharge_polarity']),
-                         (False, 'negative'))
-        self.assertEqual(samples[2]['detection_method'], 'shunt-direction')
-        self.assertTrue(samples[3]['healthy'])
-
-    def test_configured_direction_detects_discharge_without_voltage_drop(self):
-        monitor = BatteryMonitor(reader=lambda *_: {
-            'voltage_v': 3.7, 'shunt_voltage_mv': 12})
-        sample = monitor.sample(self.settings(discharge_polarity='positive'))['mains']
-        self.assertFalse(sample['healthy'])
-        self.assertEqual(sample['detection_method'], 'shunt-direction')
-
-    def test_voltage_drop_fallback_recovers_without_shunt_signal(self):
-        readings = iter(((3.70, 0), (3.55, 0), (3.56, 0), (3.64, 0)))
-        monitor = BatteryMonitor(reader=lambda *_: dict(
-            zip(('voltage_v', 'shunt_voltage_mv'), next(readings))))
-        with patch('piwatch.battery.time.monotonic', side_effect=(0, 1, 2, 3)):
-            samples = [monitor.sample(self.settings())['mains'] for _ in range(4)]
-        self.assertEqual([sample['healthy'] for sample in samples], [True, False, False, True])
-        self.assertEqual(samples[1]['detection_method'], 'voltage-drop')
-        self.assertEqual(samples[1]['discharge_polarity'], 'unlearned')
-
-    def test_captured_ups_failover_exceeds_noise_and_recovers(self):
-        # September 11 hardware trace: powered noise spanned 20 mV, failover
-        # dropped 72 mV, and restoration rose 72 mV with no usable shunt signal.
-        readings = iter(((3.736, -0.03), (3.716, 0.00), (3.736, -0.02),
-                         (3.664, -0.03), (3.656, 0.00), (3.648, -0.01),
-                         (3.720, -0.04)))
-        monitor = BatteryMonitor(reader=lambda *_: dict(
-            zip(('voltage_v', 'shunt_voltage_mv'), next(readings))))
-        with patch('piwatch.battery.time.monotonic', side_effect=range(7)):
-            samples = [monitor.sample(self.settings())['mains'] for _ in range(7)]
-        self.assertTrue(all(sample['healthy'] for sample in samples[:3]))
-        self.assertTrue(all(not sample['healthy'] for sample in samples[3:6]))
-        self.assertEqual(samples[3]['detection_method'], 'voltage-drop')
-        self.assertTrue(samples[6]['healthy'])
+        self.assertEqual(reading, {'voltage_v': 3.592})
 
     def test_unavailable_sensor_does_not_create_a_failure_sample(self):
         def unavailable(*_):
             raise PermissionError()
         sample = BatteryMonitor(reader=unavailable).sample(self.settings())
-        self.assertFalse(sample['battery']['sampled'])
-        self.assertFalse(sample['mains']['sampled'])
+        self.assertFalse(sample['sampled'])
+
+
+class MainsTests(unittest.TestCase):
+    settings = staticmethod(lambda: validate_config({'targets': []})['battery'])
+
+    def test_gpio_loss_and_restore_are_debounced_for_three_seconds(self):
+        levels = iter((False, False, False, True, True, True))
+        times = iter((0, 2.9, 3.0, 4.0, 6.9, 7.0))
+        monitor = MainsMonitor(reader=lambda *_: next(levels), stable_state=True,
+                               clock=lambda: next(times))
+        samples = [monitor.sample(self.settings(), 3.612) for _ in range(6)]
+        self.assertEqual([sample['healthy'] for sample in samples],
+                         [True, True, False, False, False, True])
+        self.assertTrue(samples[0]['debouncing'])
+        self.assertFalse(samples[2]['debouncing'])
+        self.assertEqual(samples[2]['voltage_v'], 3.612)
+
+    def test_short_gpio_change_is_ignored(self):
+        levels = iter((False, True, True))
+        times = iter((0, 1, 2))
+        monitor = MainsMonitor(reader=lambda *_: next(levels), stable_state=True,
+                               clock=lambda: next(times))
+        samples = [monitor.sample(self.settings(), voltage) for voltage in (3.7, 3.4, 3.1)]
+        self.assertTrue(all(sample['healthy'] for sample in samples))
+
+    def test_gpio_state_is_independent_of_battery_voltage(self):
+        monitor = MainsMonitor(reader=lambda *_: True, stable_state=True, clock=lambda: 0)
+        self.assertTrue(monitor.sample(self.settings(), 2.9)['healthy'])
+
+    def test_unavailable_gpio_does_not_create_a_failure_sample(self):
+        monitor = MainsMonitor(reader=lambda *_: (_ for _ in ()).throw(PermissionError()))
+        sample = monitor.sample(self.settings(), 3.5)
+        self.assertFalse(sample['available'])
+        self.assertFalse(sample['sampled'])
 
 
 class TrackerReconciliationTests(unittest.TestCase):
+    def test_mains_uses_only_the_gpio_debounce_threshold(self):
+        value = validate_config({'targets': []})
+        tracker = daemon.reconcile_trackers(value, {}, {})['mains']
+        self.assertEqual((tracker.suspect_after, tracker.down_after, tracker.recover_after),
+                         (1, 1, 1))
+
     def test_dynamic_targets_reset_evidence_only_for_changed_checks(self):
         old = config()
         trackers = daemon.reconcile_trackers(old, {}, {})
@@ -379,21 +385,22 @@ class HistoryTests(unittest.TestCase):
         trackers = daemon.reconcile_trackers(value, {}, {})
         trackers['mains'].state = 'DOWN'
         trackers['mains'].down_since = time.time()
-        trackers['mains'].detected_polarity = 'negative'
         results = {name: {'healthy': True} for name in trackers}
         results['mains'] = {'healthy': False, 'voltage_v': 3.48,
-                            'voltage_drop_v': .14, 'outage': True}
+                            'gpio': 17, 'gpio_level': False, 'source': 'gpio',
+                            'outage': True}
         self.box.record(trackers, [('mains', 'DOWN', results)], value['gateways'])
         channels = [row[0] for row in self.box.db.execute(
             'SELECT channel FROM jobs ORDER BY channel')]
         self.assertEqual(channels, ['ha', 'lora', 'smtp'])
         payload = json.loads(self.box.db.execute(
             "SELECT payload FROM jobs WHERE channel='ha'").fetchone()[0])
-        self.assertIn('Mains power OUTAGE', payload['title'])
-        self.assertIn('Observed drop: 0.140 V', payload['message'])
-        restored = daemon.reconcile_trackers(value, {}, {})
-        self.box.restore(restored)
-        self.assertEqual(restored['mains'].detected_polarity, 'negative')
+        self.assertIn('Mains power lost', payload['title'])
+        self.assertIn('Battery voltage: 3.480 V', payload['message'])
+        self.assertIn('GPIO17: LOW', payload['message'])
+        trackers['mains'].state = 'UP'
+        restored_title, _ = build_message('mains', 'UP', results, trackers)
+        self.assertIn('Mains power restored', restored_title)
 
     def test_failure_rolls_back_history_and_state(self):
         with patch.object(outbox, 'build_lora_messages', side_effect=ValueError('test')):

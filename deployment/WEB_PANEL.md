@@ -84,13 +84,13 @@ editing a gateway cannot redirect an existing alert midway through delivery. An
 unset field uses the watchdog's inherited environment; explicitly clearing a
 credential sets it to empty. Disable a gateway with its Enabled checkbox.
 
-The UPS section controls battery voltage and inferred mains monitoring. Mains
+The UPS section controls INA219 battery-voltage monitoring and GPIO mains monitoring. Mains
 outage/restoration differs from ordinary service alerts: each event is queued
-independently for every enabled Home Assistant, SMTP, and LoRa gateway. Automatic
-discharge direction is learned when a clear voltage drop coincides with a usable
-shunt signal. With this Pi's voltage-only wiring, mains detection uses a 0.05 V
-drop and recovery rise; the measured failover edge was 0.072 V and powered noise
-spanned 0.020 V. The INA219 does not directly know whether household power is present.
+independently for every enabled Home Assistant, SMTP, and LoRa gateway. GPIO17 on
+physical pin 11 is authoritative: HIGH means the USB-C / 5 V input is
+present and LOW means it is absent. A configurable two-to-three-second debounce
+filters short changes. Alerts include the latest INA219 battery voltage when it is
+available; INA219 readings do not determine mains state.
 
 The original `config.json` is only the initial import/fallback. Once the SQLite
 settings DB exists, changes to that JSON do not alter live monitoring. Radio USB

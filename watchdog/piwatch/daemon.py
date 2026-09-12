@@ -10,6 +10,7 @@ from .battery import BatteryMonitor
 from .config import load_config
 from .config_store import SettingsStore
 from .health import health_worker, SystemSampler
+from .mains import MainsMonitor
 from .notifications.outbox import Outbox
 from .state import StateTracker
 from .status import write_status
@@ -53,12 +54,16 @@ def reconcile_trackers(config, previous, trackers):
                         for name in ('internet', 'dns') if config[name]['enabled']})
     if config['battery']['enabled']:
         definitions['battery'] = {'name': 'UPS battery', **config['battery']}
-        if config['battery']['mains_detection_enabled']:
-            definitions['mains'] = {'name': 'Mains power', **config['battery']}
+    if config['battery']['mains_detection_enabled']:
+        definitions['mains'] = {'name': 'Mains power', 'gpio': 17,
+                                'debounce_seconds': config['battery']['mains_debounce_seconds']}
     old_definitions = {t['id']: t for t in previous.get('targets', [])}
     old_definitions.update({name: previous.get(name) for name in ('internet', 'dns')})
     old_definitions['battery'] = previous.get('battery')
-    old_definitions['mains'] = previous.get('battery')
+    old_battery = previous.get('battery') or {}
+    old_definitions['mains'] = ({'name': 'Mains power', 'gpio': 17,
+                                'debounce_seconds': old_battery.get('mains_debounce_seconds')}
+                               if old_battery.get('mains_detection_enabled') else None)
     updated = {}
     for name, definition in definitions.items():
         old = old_definitions.get(name)
@@ -68,9 +73,9 @@ def reconcile_trackers(config, previous, trackers):
             tracker = trackers[name]
         else:
             tracker = StateTracker(name, config['suspect_after_failures'], config['down_after_failures'], config['recover_after_successes'])
-        tracker.suspect_after = config['suspect_after_failures']
-        tracker.down_after = config['down_after_failures']
-        tracker.recover_after = config['recover_after_successes']
+        tracker.suspect_after = 1 if name == 'mains' else config['suspect_after_failures']
+        tracker.down_after = 1 if name == 'mains' else config['down_after_failures']
+        tracker.recover_after = 1 if name == 'mains' else config['recover_after_successes']
         tracker.display = definition['name']
         tracker.definition = json.dumps(comparable(definition), sort_keys=True)
         updated[name] = tracker
@@ -96,16 +101,17 @@ async def run(config=None):
     system_sampler = SystemSampler()
     battery_monitor = BatteryMonitor(
         battery_low=(trackers.get('battery') is not None and
-                     trackers['battery'].state in ('SUSPECT', 'DOWN')),
-        mains_out=(trackers.get('mains') is not None and
-                   trackers['mains'].state in ('SUSPECT', 'DOWN')),
-        learned_polarity=getattr(trackers.get('mains'), 'detected_polarity', None))
+                     trackers['battery'].state in ('SUSPECT', 'DOWN')))
+    mains_monitor = MainsMonitor(stable_state=(
+        trackers['mains'].state == 'UP' if trackers.get('mains') and
+        trackers['mains'].state in ('UP', 'DOWN') else None))
     workers = [asyncio.create_task(outbox.work(channel))
                for channel in ('ip', 'ha', 'smtp', 'lora')]
     workers.append(asyncio.create_task(health_worker(health, stop, current)))
     next_probe = 0
     results = {}
     local_results = {}
+    battery_value = None
     config_error = None
     log.info('piwatchd starting; targets=%s', ','.join(trackers))
     try:
@@ -121,11 +127,10 @@ async def run(config=None):
                         external = ExternalChecks(config)
                         battery_monitor = BatteryMonitor(
                             battery_low=(trackers.get('battery') is not None and
-                                         trackers['battery'].state in ('SUSPECT', 'DOWN')),
-                            mains_out=(trackers.get('mains') is not None and
-                                       trackers['mains'].state in ('SUSPECT', 'DOWN')),
-                            learned_polarity=getattr(trackers.get('mains'),
-                                                     'detected_polarity', None))
+                                         trackers['battery'].state in ('SUSPECT', 'DOWN')))
+                        mains_monitor = MainsMonitor(stable_state=(
+                            trackers['mains'].state == 'UP' if trackers.get('mains') and
+                            trackers['mains'].state in ('UP', 'DOWN') else None))
                         next_probe = 0
                         results = {}
                         local_results = {}
@@ -136,24 +141,30 @@ async def run(config=None):
                     config_error = type(exc).__name__
             sample_local = time.monotonic() >= next_probe
             async def local_sample():
+                nonlocal battery_value
                 if sample_local:
                     values = await check_all(config)
+                    if (config['battery']['enabled'] or
+                            config['battery']['mains_detection_enabled']):
+                        battery_value = await asyncio.to_thread(
+                            battery_monitor.sample, config['battery'])
                     if config['battery']['enabled']:
-                        battery_values = await asyncio.to_thread(battery_monitor.sample, config['battery'])
-                        values['battery'] = battery_values['battery']
-                        if config['battery']['mains_detection_enabled']:
-                            values['mains'] = battery_values['mains']
+                        values['battery'] = battery_value
                     return {name: {'checked_at': time.time(), 'sampled': True, **value}
                             for name, value in values.items()}
                 return {name: {**value, 'sampled': False} for name, value in local_results.items()}
             local_results, remote = await asyncio.gather(local_sample(), external.collect())
+            if config['battery']['mains_detection_enabled']:
+                voltage = battery_value.get('voltage_v') if battery_value else None
+                mains_value = await asyncio.to_thread(
+                    mains_monitor.sample, config['battery'], voltage)
+                local_results['mains'] = {
+                    'checked_at': time.time(), 'sampled': True, **mains_value}
             if sample_local:
                 next_probe = cycle + config['interval_seconds']
             results = {**local_results, **remote}
             transitions = []
             for name, tracker in trackers.items():
-                if name == 'mains' and results[name].get('discharge_polarity') in ('positive', 'negative'):
-                    tracker.detected_polarity = results[name]['discharge_polarity']
                 if results[name].get('sampled', True):
                     transition = tracker.update(results[name]['healthy'])
                     if transition:

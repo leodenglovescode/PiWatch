@@ -13,9 +13,9 @@ DEFAULT_INTERNET = {'enabled': True, 'targets': [
 DEFAULT_DNS = {'enabled': True, 'names': ['example.com', 'www.baidu.com']}
 DEFAULT_BATTERY = {'enabled': True, 'bus': 3, 'address': 0x40,
                    'low_voltage_v': 3.30, 'recover_voltage_v': 3.50,
-                   'mains_detection_enabled': True, 'mains_drop_v': 0.05,
-                   'mains_recover_rise_v': 0.05, 'mains_window_seconds': 10.0,
-                   'discharge_polarity': 'auto', 'discharge_shunt_mv': 0.50}
+                   'mains_detection_enabled': True, 'mains_debounce_seconds': 3.0}
+LEGACY_MAINS_FIELDS = {'mains_drop_v', 'mains_recover_rise_v', 'mains_window_seconds',
+                       'discharge_polarity', 'discharge_shunt_mv'}
 SECRET_FIELDS = {'lora': ('token',), 'smtp': ('password',), 'home_assistant': ('webhook_id',)}
 GATEWAY_FIELDS = {
     'lora': {'enabled', 'url', 'token'},
@@ -112,6 +112,10 @@ def _validate_config(raw):
     for name in names:
         host(name)
     battery = config.setdefault('battery', copy.deepcopy(DEFAULT_BATTERY))
+    if isinstance(battery, dict):
+        # Saved settings from the voltage-inference implementation migrate in place.
+        for key in LEGACY_MAINS_FIELDS:
+            battery.pop(key, None)
     if not isinstance(battery, dict) or set(battery) - DEFAULT_BATTERY.keys():
         raise ValueError('Unknown battery setting')
     battery = config['battery'] = {**DEFAULT_BATTERY, **battery}
@@ -132,22 +136,12 @@ def _validate_config(raw):
         raise ValueError('Battery recovery voltage must be at least 0.04 V above low and no more than 4.20 V')
     if not isinstance(battery['mains_detection_enabled'], bool):
         raise ValueError('battery.mains_detection_enabled must be a boolean')
-    if battery['discharge_polarity'] not in ('auto', 'positive', 'negative'):
-        raise ValueError('Battery discharge polarity must be auto, positive, or negative')
-    for key in ('mains_drop_v', 'mains_recover_rise_v', 'mains_window_seconds',
-                'discharge_shunt_mv'):
-        value = battery[key]
-        if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
-            raise ValueError(f'battery.{key} must be a finite number')
-        battery[key] = float(value)
-    if not 0.04 <= battery['mains_drop_v'] <= 0.80:
-        raise ValueError('Mains detection drop must be between 0.04 and 0.80 V')
-    if not 0.04 <= battery['mains_recover_rise_v'] <= 0.80:
-        raise ValueError('Mains recovery rise must be between 0.04 and 0.80 V')
-    if not 2 <= battery['mains_window_seconds'] <= 60:
-        raise ValueError('Mains detection window must be between 2 and 60 seconds')
-    if not 0.05 <= battery['discharge_shunt_mv'] <= 100:
-        raise ValueError('Discharge shunt threshold must be between 0.05 and 100 mV')
+    value = battery['mains_debounce_seconds']
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        raise ValueError('battery.mains_debounce_seconds must be a finite number')
+    battery['mains_debounce_seconds'] = float(value)
+    if not 2 <= battery['mains_debounce_seconds'] <= 3:
+        raise ValueError('Mains GPIO debounce must be between 2 and 3 seconds')
     gateways = config.setdefault('gateways', {})
     if not isinstance(gateways, dict) or set(gateways) - GATEWAY_FIELDS.keys():
         raise ValueError('Unknown message gateway')

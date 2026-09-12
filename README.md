@@ -64,20 +64,19 @@ has no effect. Secret fields left unset continue to use existing service environ
 values. The panel never reads either deployment secrets file. SMTP for email 2FA
 must be explicitly configured because the web service cannot access those files.
 
-The UPS monitor reads the INA219 bus and signed shunt-voltage registers directly
-through `/dev/i2c-3`; it does not invoke `sudo` or depend on a Python sensor package.
+The UPS monitor reads the INA219 bus-voltage register directly through `/dev/i2c-3`;
+it does not invoke `sudo` or depend on a Python sensor package.
 The default 1S thresholds are 3.30 V low and 3.50 V recovered. The normal transition
 counters debounce the alarm, and the separate recovery threshold prevents chatter
-from voltage sag. Mains detection uses a configured discharge direction when the
-INA219 shunt is wired in series, with a 0.05 V drop over 10 seconds as the fallback
-signal. The threshold is based on a measured 0.072 V failover edge and 0.020 V
-powered noise span on this UPS.
-The polarity learned during an incident is preserved with tracker state.
+from voltage sag. Mains presence comes only from the active-high GPIO17 input on
+physical pin 11. A change must remain stable for three seconds before it is accepted;
+the GPIO is sampled once per control cycle, independently of the configurable service
+probe interval. INA219 voltage changes never alter the mains state.
 
 Battery events use the normal notification policy. Mains outage and restoration
 events create independent durable Home Assistant, SMTP, and LoRa jobs for every
 enabled gateway, so failure of one path does not suppress the others. The
-`piwatch` service receives I²C access through its systemd supplementary group.
+`piwatch` service receives I²C and GPIO access through its systemd supplementary groups.
 
 The overview uses the locally vendored Vue 3.5.42 production runtime and render
 functions. It polls the authenticated status endpoint every two seconds and keeps

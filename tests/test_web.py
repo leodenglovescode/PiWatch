@@ -88,6 +88,8 @@ class WebTests(unittest.TestCase):
         settings = self.client.get('/settings').text
         self.assertIn('name="battery_low_voltage"', settings)
         self.assertIn('name="mains_detection_enabled"', settings)
+        self.assertIn('name="mains_debounce_seconds"', settings)
+        self.assertIn('GPIO17 · physical pin 11', settings)
         self.assertIn('id="clear-deliveries"', settings)
         self.assertIn('id="clear-incidents"', settings)
 

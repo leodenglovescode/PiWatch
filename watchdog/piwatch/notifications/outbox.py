@@ -143,8 +143,6 @@ class Outbox:
                     continue
                 for key in ("state", "last_change", "down_since", "last_outage_seconds"):
                     setattr(trackers[name], key, saved[key])
-                if saved.get('detected_polarity') in ('positive', 'negative'):
-                    trackers[name].detected_polarity = saved['detected_polarity']
                 # Thresholds come from current config; consecutive samples restart.
                 trackers[name].failures = trackers[name].successes = 0
 
@@ -163,8 +161,8 @@ class Outbox:
                      trackers[name].last_outage_seconds if state == "UP" else None,
                      json.dumps({key: value for key, value in results[name].items()
                                  if isinstance(value, bool) or key in (
-                                     'voltage_v', 'low_voltage_v', 'voltage_drop_v',
-                                     'shunt_voltage_mv', 'detection_method', 'discharge_polarity')}),
+                                     'voltage_v', 'low_voltage_v', 'gpio', 'physical_pin',
+                                     'source', 'debounce_seconds')}),
                      getattr(trackers[name], 'display', name)),
                 )
                 severity = "critical" if state == "DOWN" else "recovery"

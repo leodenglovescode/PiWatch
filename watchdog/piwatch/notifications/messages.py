@@ -26,22 +26,19 @@ def probe_lines(result):
     lines = [f"{label}: {'OK' if result[key] else 'FAIL'}"
              for key, label in labels.items() if key in result]
     if isinstance(result.get('voltage_v'), (int, float)):
-        lines.append(f"Voltage: {result['voltage_v']:.3f} V")
+        label = 'Battery voltage' if result.get('source') == 'gpio' else 'Voltage'
+        lines.append(f"{label}: {result['voltage_v']:.3f} V")
     if isinstance(result.get('low_voltage_v'), (int, float)):
         lines.append(f"Low threshold: {result['low_voltage_v']:.2f} V")
-    if isinstance(result.get('voltage_drop_v'), (int, float)):
-        lines.append(f"Observed drop: {result['voltage_drop_v']:.3f} V")
-    if isinstance(result.get('shunt_voltage_mv'), (int, float)):
-        lines.append(f"Shunt signal: {result['shunt_voltage_mv']:+.3f} mV")
-    if result.get('detection_method') in ('shunt-direction', 'voltage-drop'):
-        lines.append(f"Detection: {result['detection_method'].replace('-', ' ')}")
+    if isinstance(result.get('gpio_level'), bool):
+        lines.append(f"GPIO{result.get('gpio', 17)}: {'HIGH' if result['gpio_level'] else 'LOW'}")
     return lines
 
 
 def build_message(name, new_state, results, trackers):
     down = new_state == "DOWN"
-    event = ('LOW' if down and name == 'battery' else 'OUTAGE' if down and name == 'mains'
-             else 'DOWN' if down else 'RESTORED' if name == 'mains' else 'RECOVERED')
+    event = ('LOW' if down and name == 'battery' else 'lost' if down and name == 'mains'
+             else 'DOWN' if down else 'restored' if name == 'mains' else 'RECOVERED')
     title = f"{'🚨' if down else '✅'} PiWatch: {getattr(trackers[name], 'display', DISPLAY_NAMES.get(name, name))} {event}"
     lines = ["Node: watchdog-pi", f"Time: {datetime.now().astimezone():%Y-%m-%d %H:%M:%S %Z}", ""]
     lines.extend(probe_lines(results[name]))
@@ -54,8 +51,8 @@ def build_message(name, new_state, results, trackers):
 
 def build_lora_messages(name, new_state, results, trackers):
     down = new_state == "DOWN"
-    event = ('LOW' if down and name == 'battery' else 'OUTAGE' if down and name == 'mains'
-             else 'DOWN' if down else 'RESTORED' if name == 'mains' else 'RECOVERED')
+    event = ('LOW' if down and name == 'battery' else 'lost' if down and name == 'mains'
+             else 'DOWN' if down else 'restored' if name == 'mains' else 'RECOVERED')
     lines = [f"{'🚨' if down else '✅'} PiWatch: {getattr(trackers[name], 'display', DISPLAY_NAMES.get(name, name))} {event}",
              f"Time: {datetime.now().astimezone():%H:%M:%S %Z}"]
     if not down:

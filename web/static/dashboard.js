@@ -185,8 +185,8 @@ const Dashboard = {
         element('span', `probe ${value[key] ? 'probe-up' : 'probe-down'}`, `${label} ${value[key] ? 'OK' : 'FAIL'}`)
       );
       if (Number.isFinite(value.voltage_v)) probes.push(element('span', `probe ${value.low ? 'probe-down' : 'probe-up'}`, `${value.voltage_v.toFixed(3)} V`));
-      if (Number.isFinite(value.shunt_voltage_mv)) probes.push(element('span', 'probe', `${value.shunt_voltage_mv >= 0 ? '+' : ''}${value.shunt_voltage_mv.toFixed(3)} mV`));
-      if (value.inferred && value.detection_method) probes.push(element('span', 'probe probe-down', value.detection_method === 'shunt-direction' ? 'Discharging' : `Drop ${value.voltage_drop_v.toFixed(3)} V`));
+      if (typeof value.gpio_level === 'boolean') probes.push(element('span', `probe ${value.gpio_level ? 'probe-up' : 'probe-down'}`, `GPIO${value.gpio ?? 17} ${value.gpio_level ? 'HIGH' : 'LOW'}`));
+      if (value.debouncing) probes.push(element('span', 'probe', 'Debouncing'));
       else if (value.available === false) probes.push(element('span', 'probe probe-down', 'Sensor unavailable'));
       return probes;
     }
@@ -313,10 +313,10 @@ const Dashboard = {
         ['Sensor', `I²C ${battery.bus} · ${battery.address}`]
       ], 'health-battery'));
       if (mains) cards.unshift(healthCard('Mains power', targetState('mains', mains), [
-        ['State', mains.outage ? 'Outage inferred' : 'Present'],
-        ['Shunt', Number.isFinite(mains.shunt_voltage_mv) ? `${mains.shunt_voltage_mv >= 0 ? '+' : ''}${mains.shunt_voltage_mv.toFixed(3)} mV` : 'Unavailable'],
-        ['Direction', mains.discharge_polarity === 'unlearned' ? 'No usable shunt signal' : `${mains.discharge_polarity} = discharge`],
-        ['Detection', mains.detection_method ? mains.detection_method.replace('-', ' ') : 'Watching direction and voltage']
+        ['State', mains.available === false ? 'Input unavailable' : mains.debouncing ? `Confirming ${mains.gpio_level ? 'restoration' : 'loss'}` : mains.outage ? 'Input absent' : 'Input present'],
+        ['Input', typeof mains.gpio_level === 'boolean' ? `GPIO${mains.gpio} ${mains.gpio_level ? 'HIGH' : 'LOW'}` : 'Unavailable'],
+        ['Battery', Number.isFinite(mains.voltage_v) ? `${mains.voltage_v.toFixed(3)} V` : 'Unavailable'],
+        ['Detection', `Physical pin ${mains.physical_pin ?? 11} · ${mains.debounce_seconds ?? 3} s debounce`]
       ], 'health-mains'));
       return panel('Operational checks', 'Local hardware and service health', element('div', 'health-card-grid', cards), 'operations-panel');
     }
@@ -360,7 +360,7 @@ const Dashboard = {
       const rows = (snapshot.value?.incidents || []).map(incident => [
         new Date(incident.timestamp * 1000).toLocaleString(),
         incident.name || snapshot.value?.targets?.[incident.target]?.name || incident.target,
-        statusPill(incident.state === 'UP' ? (incident.target === 'mains' ? 'RESTORED' : 'RECOVERED') : incident.target === 'battery' ? 'LOW' : incident.target === 'mains' ? 'OUTAGE' : incident.state),
+        statusPill(incident.state === 'UP' ? (incident.target === 'mains' ? 'RESTORED' : 'RECOVERED') : incident.target === 'battery' ? 'LOW' : incident.target === 'mains' ? 'LOST' : incident.state),
         Number.isFinite(incident.probes?.voltage_v) ? `${incident.probes.voltage_v.toFixed(3)} V` : '—',
         incident.outage_seconds === null ? '—' : PW.age(incident.outage_seconds)
       ]);
