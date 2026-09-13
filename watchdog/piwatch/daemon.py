@@ -13,8 +13,10 @@ from .health import health_worker, SystemSampler
 from .mains import MainsMonitor
 from .notifications.outbox import Outbox
 from .ups_supervisor import (LowBatteryShutdown, NOTIFICATION_START_TIMEOUT_SECONDS,
-                             PICO_REGISTER_SECONDS, PicoSupervisor,
-                             SHUTDOWN_VOLTAGE_V, request_poweroff,
+                             OLED_OFF_GRACE_SECONDS, PICO_REGISTER_SECONDS,
+                             PicoSupervisor, SHUTDOWN_TEST_COUNTDOWN_SECONDS,
+                             SHUTDOWN_VOLTAGE_V, live_sample,
+                             power_input_lock, request_poweroff,
                              take_shutdown_test_request,
                              valid_battery_voltage, write_shutdown_test_result)
 from .state import StateTracker
@@ -46,7 +48,10 @@ async def perform_low_battery_shutdown(trackers, results, outbox, gateways,
         event_result['low_voltage_v'] = SHUTDOWN_VOLTAGE_V
     event_results = {**results, event_name: event_result}
 
-    shutdown.mark('NOTIFYING')
+    if test:
+        shutdown.begin_test_countdown(SHUTDOWN_TEST_COUNTDOWN_SECONDS)
+    else:
+        shutdown.mark('NOTIFYING')
     try:
         job_ids = outbox.record(
             event_trackers, [(event_name, 'DOWN', event_results)], gateways)
@@ -57,6 +62,16 @@ async def perform_low_battery_shutdown(trackers, results, outbox, gateways,
         # Notification failure must not leave the Pi running until brownout.
         log.error('Could not queue final shutdown notification: %s',
                   type(exc).__name__)
+
+    if test:
+        remaining = shutdown.final_countdown_remaining()
+        if remaining:
+            await asyncio.sleep(remaining)
+
+    # Give the OLED process enough time to observe DISPLAY_OFF and issue the
+    # controller's low-power command before arming and powering off.
+    shutdown.mark('DISPLAY_OFF')
+    await asyncio.sleep(OLED_OFF_GRACE_SECONDS)
 
     shutdown.mark('ARMING')
     try:
@@ -86,9 +101,8 @@ async def low_battery_worker(stop, current, outbox, shutdown, pico, hardware_loc
         cycle = time.monotonic()
         settings = current['config']['battery']
         async with hardware_lock:
-            battery = await asyncio.to_thread(battery_monitor.sample, settings)
-            voltage = battery.get('voltage_v') if battery else None
-            mains = await asyncio.to_thread(mains_monitor.sample, settings, voltage)
+            battery, mains = await asyncio.to_thread(
+                live_sample, settings, battery_monitor, mains_monitor)
         mains_present = (mains.get('gpio_level')
                          if mains.get('available') is True else None)
         try:
@@ -273,8 +287,10 @@ async def run(config=None):
                     if (config['battery']['enabled'] or
                             config['battery']['mains_detection_enabled']):
                         async with hardware_lock:
-                            battery_value = await asyncio.to_thread(
-                                battery_monitor.sample, config['battery'])
+                            def sample_battery():
+                                with power_input_lock():
+                                    return battery_monitor.sample(config['battery'])
+                            battery_value = await asyncio.to_thread(sample_battery)
                     if config['battery']['enabled']:
                         values['battery'] = battery_value
                     return {name: {'checked_at': time.time(), 'sampled': True, **value}
@@ -284,8 +300,10 @@ async def run(config=None):
             if config['battery']['mains_detection_enabled']:
                 voltage = battery_value.get('voltage_v') if battery_value else None
                 async with hardware_lock:
-                    mains_value = await asyncio.to_thread(
-                        mains_monitor.sample, config['battery'], voltage)
+                    def sample_mains():
+                        with power_input_lock():
+                            return mains_monitor.sample(config['battery'], voltage)
+                    mains_value = await asyncio.to_thread(sample_mains)
                 local_results['mains'] = {
                     'checked_at': time.time(), 'sampled': True, **mains_value}
             if sample_local:

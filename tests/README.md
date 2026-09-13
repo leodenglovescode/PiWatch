@@ -44,7 +44,8 @@ read deployment secret files, or send notifications.
 The power-supervisor regressions use fake GPIO requests, a synthetic monotonic
 clock, and a mocked `systemctl` subprocess. They never pulse a real GPIO or request
 a real shutdown. They also cover the temporary-threshold dry run, ARM/DISARM test,
-one-shot daemon request files, and the guarded end-to-end request path.
+one-shot daemon request files, the guarded end-to-end request path, cross-process
+input coordination, and OLED power-event/countdown presentation.
 
 After an authorized deployment, hardware validation still needs an intended test
 window/destination. Follow `deployment/WEB_PANEL.md` and `deployment/README.md`.

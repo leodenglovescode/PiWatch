@@ -63,12 +63,15 @@ Exercise the real GPIO17 and INA219 inputs with a temporary dry-run threshold:
 
 ```bash
 sudo /usr/bin/python3 /usr/local/lib/piwatch/piwatchd.py ups-test dry-run \
-  --threshold 4.00 --seconds 30
+  --threshold 4.20 --seconds 30
 ```
 
 The dry run prints one sample per second and reports when shutdown would trigger.
 It never requests GPIO2 and never powers off. Choose a threshold at or just above
-the current battery voltage, then unplug mains to exercise the full countdown.
+the current battery voltage, then unplug mains to exercise the full countdown. For
+a battery reading around 4.18 V, use `--threshold 4.20`; a 4.00 V threshold remains
+idle because the measured voltage is still above it. A shared lock serializes its
+INA219 and GPIO17 reads with the running watchdog.
 
 With mains present, test the Pico command pulse and buzzer without shutting down:
 
@@ -90,8 +93,16 @@ sudo /usr/bin/python3 /usr/local/lib/piwatch/piwatchd.py ups-test shutdown \
 ```
 
 The running daemon records a clearly labeled test incident, starts every enabled
-notification path, sends the Pico ARM pulse, and requests clean poweroff. Restore
-mains after the Pi halts to test the Pico's GPIO3 wake pulse and retries.
+notification path, presents a ten-second OLED test countdown, puts the SSD1306 into its
+low-power display-off mode, sends the Pico ARM pulse, and requests clean poweroff.
+Restore mains after the Pi halts to test the Pico's GPIO3 wake pulse and retries.
+
+The OLED also temporarily replaces its rotating pages with `MAINS POWER` and
+`DISCONNECTED` or `RESTORED` for three seconds after each debounced GPIO17 event.
+During automatic low-battery qualification, its final ten seconds replace the
+rotating pages with the shutdown countdown; this is part of the existing 30-second
+period and adds no delay. On service termination it sends the SSD1306 display-off
+command before exiting.
 
 Every three days, each service prunes and compacts its own delivery database. The
 watchdog removes completed and failed jobs older than three days while preserving

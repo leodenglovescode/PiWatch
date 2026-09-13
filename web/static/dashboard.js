@@ -322,6 +322,7 @@ const Dashboard = {
         const phase = {
           IDLE: 'Standing by', QUALIFYING: 'Confirming low battery', TRIGGERED: 'Shutdown triggered',
           TEST_TRIGGERED: 'Operator shutdown test',
+          TEST_COUNTDOWN: 'Test shutdown countdown', DISPLAY_OFF: 'Turning display off',
           NOTIFYING: 'Sending final alert', ARMING: 'Arming Pico', ARMED: 'Pico armed',
           ARM_FAILED: 'Pico ARM failed', POWEROFF_REQUESTED: 'Poweroff requested',
           POWEROFF_FAILED: 'Poweroff failed'
@@ -330,6 +331,7 @@ const Dashboard = {
           ['State', phase],
           ['Shutdown rule', `≤ ${supervisor.shutdown_voltage_v.toFixed(2)} V for ${supervisor.qualification_seconds.toFixed(0)} s`],
           ['Qualification', supervisor.state === 'QUALIFYING' ? `${supervisor.remaining_seconds.toFixed(1)} s remaining` : 'Not active'],
+          ['Test countdown', supervisor.state === 'TEST_COUNTDOWN' ? `${supervisor.final_countdown_seconds.toFixed(1)} s remaining` : 'Not active'],
           ['Pico command', `GPIO${supervisor.command_gpio} · physical pin ${supervisor.command_physical_pin}`],
           ['Command health', supervisor.error || supervisor.startup_error || 'Ready']
         ], 'health-supervisor'));

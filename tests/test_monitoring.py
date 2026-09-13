@@ -2,7 +2,9 @@
 import asyncio
 import copy
 from contextlib import closing
+import fcntl
 import json
+import os
 from pathlib import Path
 import signal
 import sqlite3
@@ -221,6 +223,17 @@ class PowerSupervisorTests(unittest.TestCase):
         run.assert_called_once_with(
             ups_supervisor.POWEROFF_COMMAND, check=True, timeout=10)
 
+    def test_power_input_lock_excludes_a_second_process_handle(self):
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / 'power-input.lock'
+            with ups_supervisor.power_input_lock(path):
+                descriptor = os.open(path, os.O_RDONLY | os.O_CLOEXEC)
+                try:
+                    with self.assertRaises(BlockingIOError):
+                        fcntl.flock(descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                finally:
+                    os.close(descriptor)
+
     def test_dry_run_can_use_a_temporary_threshold_without_side_effects(self):
         now = [0.0]
         output = []
@@ -318,15 +331,49 @@ class ShutdownActionTests(unittest.IsolatedAsyncioTestCase):
         async def immediate(function, *args):
             return function(*args)
 
+        sleeps = []
+
+        async def sleep(seconds):
+            sleeps.append(seconds)
+
         with patch.object(daemon, 'request_poweroff', side_effect=poweroff), \
-             patch.object(daemon, 'PICO_REGISTER_SECONDS', 0), \
+             patch.object(daemon.asyncio, 'sleep', side_effect=sleep), \
              patch.object(daemon.asyncio, 'to_thread', side_effect=immediate):
             await daemon.perform_low_battery_shutdown(
                 {}, {}, Box(), {}, shutdown, pico)
 
         self.assertEqual(events,
                          ['notify', 'delivery-started', 'arm', 'poweroff'])
+        self.assertEqual(sleeps, [2.0, 0.25])
         self.assertEqual(shutdown.action_state, 'POWEROFF_REQUESTED')
+
+    async def test_operator_shutdown_test_has_a_ten_second_countdown(self):
+        class Box:
+            def record(self, *_args):
+                return []
+
+            async def wait_started(self, _job_ids, _timeout):
+                return True
+
+        shutdown = LowBatteryShutdown(clock=lambda: 5)
+        shutdown.last_voltage_v = 4.0
+        shutdown.latched = True
+        sleeps = []
+
+        async def sleep(seconds):
+            sleeps.append(seconds)
+
+        async def immediate(function, *args):
+            return function(*args)
+
+        with patch.object(daemon.asyncio, 'sleep', side_effect=sleep), \
+             patch.object(daemon.asyncio, 'to_thread', side_effect=immediate), \
+             patch.object(daemon, 'request_poweroff'):
+            await daemon.perform_low_battery_shutdown(
+                {}, {}, Box(), {}, shutdown,
+                types.SimpleNamespace(arm=lambda: None), test=True)
+
+        self.assertEqual(sleeps, [10.0, 2.0, 0.25])
 
     async def test_running_daemon_accepts_manual_shutdown_only_with_valid_inputs(self):
         stop = asyncio.Event()
@@ -350,6 +397,8 @@ class ShutdownActionTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(daemon, 'BatteryMonitor', return_value=battery), \
              patch.object(daemon, 'MainsMonitor', return_value=mains), \
+             patch.object(daemon, 'live_sample', return_value=(
+                 battery.sample({}), mains.sample({}, 3.9))), \
              patch.object(daemon.asyncio, 'to_thread', side_effect=immediate), \
              patch.object(daemon, 'take_shutdown_test_request',
                           return_value={'id': 'a' * 32, 'action': 'shutdown'}), \
@@ -386,6 +435,8 @@ class ShutdownActionTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(daemon, 'BatteryMonitor', return_value=battery), \
              patch.object(daemon, 'MainsMonitor', return_value=mains), \
+             patch.object(daemon, 'live_sample', return_value=(
+                 battery.sample({}), mains.sample({}, 3.9))), \
              patch.object(daemon.asyncio, 'to_thread', side_effect=immediate), \
              patch.object(daemon, 'take_shutdown_test_request',
                           return_value={'id': 'b' * 32, 'action': 'shutdown'}), \
@@ -566,6 +617,8 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
                  patch.object(daemon, 'Outbox', side_effect=factory), \
                  patch.object(daemon, 'BatteryMonitor', return_value=battery), \
                  patch.object(daemon, 'MainsMonitor', return_value=mains), \
+                 patch.object(daemon, 'live_sample', return_value=(
+                     battery.sample({}), mains.sample({}, None))), \
                  patch.object(daemon, 'PicoSupervisor', return_value=pico), \
                  patch.object(daemon.asyncio, 'to_thread', side_effect=immediate), \
                  patch.object(daemon, 'check_all', side_effect=local), \

@@ -1,8 +1,10 @@
 import time
 from metrics import get_ip, get_temp, get_uptime, get_time_source
 from gps_status import gps, gpsd_reader
+from power_overlay import PowerOverlay, read_status
 from watchdog_page import page_watchdog as draw_watchdog
 import psutil
+import signal
 import subprocess
 import threading
 
@@ -15,6 +17,9 @@ from PIL import ImageFont
 
 REFRESH = 0.5
 PAGE_TIME = 5.0
+STOP = threading.Event()
+POWER_OVERLAY = PowerOverlay()
+DISPLAY_HIDDEN = False
 
 
 # --------------------------------------------------
@@ -45,6 +50,43 @@ def init_display():
     FONT_SMALL = ImageFont.truetype(FONT_PATH, 9)
 
 
+def stop(_signum=None, _frame=None):
+    STOP.set()
+
+
+def wait_refresh():
+    STOP.wait(REFRESH)
+
+
+def centered(draw, y, text, font):
+    bounds = draw.textbbox((0, 0), text, font=font)
+    width = bounds[2] - bounds[0]
+    draw.text((max(0, (128 - width) // 2), y), text, font=font, fill='white')
+
+
+def render_power_overlay():
+    """Draw a transient power event, or put the SSD1306 into sleep mode."""
+    global DISPLAY_HIDDEN
+    overlay = POWER_OVERLAY.update(read_status())
+    if overlay and overlay.get('display_off'):
+        if not DISPLAY_HIDDEN:
+            device.hide()
+            DISPLAY_HIDDEN = True
+        return True
+    if DISPLAY_HIDDEN:
+        device.show()
+        DISPLAY_HIDDEN = False
+    if not overlay:
+        return False
+    with canvas(device) as draw:
+        centered(draw, 3, overlay['title'], FONT)
+        centered(draw, 24, overlay['message'], FONT_BIG)
+        voltage = overlay.get('voltage_v')
+        if voltage is not None:
+            centered(draw, 50, f'BAT {voltage:.3f} V', FONT_SMALL)
+    return True
+
+
 
 
 # --------------------------------------------------
@@ -54,7 +96,10 @@ def init_display():
 def page_system():
     end = time.monotonic() + PAGE_TIME
 
-    while time.monotonic() < end:
+    while time.monotonic() < end and not STOP.is_set():
+        if render_power_overlay():
+            wait_refresh()
+            continue
         cpu = psutil.cpu_percent(interval=None)
         ram = psutil.virtual_memory().percent
         temp = get_temp()
@@ -88,13 +133,16 @@ def page_system():
                 fill="white"
             )
 
-        time.sleep(REFRESH)
+        wait_refresh()
 
 
 def page_network():
     end = time.monotonic() + PAGE_TIME
 
-    while time.monotonic() < end:
+    while time.monotonic() < end and not STOP.is_set():
+        if render_power_overlay():
+            wait_refresh()
+            continue
         disk = psutil.disk_usage("/").percent
         ip = get_ip()
 
@@ -120,13 +168,16 @@ def page_network():
                 fill="white"
             )
 
-        time.sleep(REFRESH)
+        wait_refresh()
 
 
 def page_gps():
     end = time.monotonic() + PAGE_TIME
 
-    while time.monotonic() < end:
+    while time.monotonic() < end and not STOP.is_set():
+        if render_power_overlay():
+            wait_refresh()
+            continue
         mode = gps["mode"]
 
         if mode >= 3:
@@ -174,13 +225,16 @@ def page_gps():
                 fill="white"
             )
 
-        time.sleep(REFRESH)
+        wait_refresh()
 
 
 def page_time():
     end = time.monotonic() + PAGE_TIME
 
-    while time.monotonic() < end:
+    while time.monotonic() < end and not STOP.is_set():
+        if render_power_overlay():
+            wait_refresh()
+            continue
         clock = time.strftime("%H:%M:%S")
         date = time.strftime("%Y-%m-%d")
         source = get_time_source()
@@ -215,7 +269,7 @@ def page_time():
                 fill="white"
             )
 
-        time.sleep(REFRESH)
+        wait_refresh()
 
 
 # --------------------------------------------------
@@ -223,19 +277,30 @@ def page_time():
 # --------------------------------------------------
 
 def page_watchdog():
-    draw_watchdog(device, FONT, FONT_BIG, PAGE_TIME, REFRESH)
+    end = time.monotonic() + PAGE_TIME
+    while time.monotonic() < end and not STOP.is_set():
+        if render_power_overlay():
+            wait_refresh()
+            continue
+        draw_watchdog(device, FONT, FONT_BIG,
+                      min(REFRESH, end - time.monotonic()), REFRESH)
 
 
 def main():
     init_display()
+    signal.signal(signal.SIGTERM, stop)
+    signal.signal(signal.SIGINT, stop)
     threading.Thread(target=gpsd_reader, daemon=True, name='gps-reader').start()
     psutil.cpu_percent(interval=None)
-    while True:
-        page_system()
-        page_network()
-        page_watchdog()
-        page_gps()
-        page_time()
+    try:
+        while not STOP.is_set():
+            page_system()
+            page_network()
+            page_watchdog()
+            page_gps()
+            page_time()
+    finally:
+        device.hide()
 
 
 if __name__ == '__main__':

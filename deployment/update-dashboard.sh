@@ -60,7 +60,7 @@ python3 - <<'PY'
 import ast
 from pathlib import Path
 
-for folder in ('watchdog', 'web'):
+for folder in ('watchdog', 'web', 'oled'):
     for path in Path(folder).rglob('*.py'):
         ast.parse(path.read_text(), filename=str(path))
 PY
@@ -201,6 +201,8 @@ PY
 
 systemctl is-active --quiet piwatch
 systemctl is-active --quiet piwatch-web
+systemctl restart piwatch-oled
+systemctl is-active --quiet piwatch-oled
 
 SERVICES_STOPPED=0
-printf 'Updated. Backup: %s\nPanel remains available on its configured bind, port 8080.\n' "$PIWATCH_BACKUP"
+printf 'Updated. Backup: %s\nPanel remains available on its configured bind, port 8080. OLED restarted.\n' "$PIWATCH_BACKUP"

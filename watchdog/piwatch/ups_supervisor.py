@@ -1,4 +1,6 @@
 """Pico command pulses and strict low-battery shutdown qualification."""
+from contextlib import contextmanager
+import fcntl
 import json
 import math
 import os
@@ -21,6 +23,8 @@ PICO_REGISTER_SECONDS = 0.250
 SHUTDOWN_VOLTAGE_V = 3.05
 SHUTDOWN_QUALIFICATION_SECONDS = 30.0
 NOTIFICATION_START_TIMEOUT_SECONDS = 3.0
+SHUTDOWN_TEST_COUNTDOWN_SECONDS = 10.0
+OLED_OFF_GRACE_SECONDS = 2.0
 POWEROFF_COMMAND = (
     '/usr/bin/sudo', '-n', '/usr/bin/systemctl', '--no-block', 'poweroff',
 )
@@ -28,6 +32,31 @@ TEST_REQUEST_PATH = Path(os.environ.get(
     'PIWATCH_UPS_TEST_REQUEST_PATH', '/run/piwatch/ups-test-request.json'))
 TEST_RESULT_PATH = Path(os.environ.get(
     'PIWATCH_UPS_TEST_RESULT_PATH', '/run/piwatch/ups-test-result.json'))
+POWER_INPUT_LOCK_PATH = Path(os.environ.get(
+    'PIWATCH_POWER_INPUT_LOCK_PATH', '/run/piwatch/power-input.lock'))
+
+
+@contextmanager
+def power_input_lock(path=None):
+    """Serialize INA219/GPIO17 reads across the daemon and test CLI."""
+    path = POWER_INPUT_LOCK_PATH if path is None else Path(path)
+    flags = os.O_RDONLY | os.O_CLOEXEC
+    if hasattr(os, 'O_NOFOLLOW'):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags | os.O_CREAT | os.O_EXCL, 0o644)
+    except FileExistsError:
+        descriptor = os.open(path, flags)
+    else:
+        # The root CLI may win the startup race. Make the empty lock readable
+        # by the piwatch service regardless of either process's umask.
+        os.fchmod(descriptor, 0o644)
+    try:
+        fcntl.flock(descriptor, fcntl.LOCK_EX)
+        yield
+    finally:
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+        os.close(descriptor)
 
 
 def valid_battery_voltage(battery):
@@ -94,6 +123,7 @@ class LowBatteryShutdown:
         self.startup_error = None
         self.last_voltage_v = None
         self.mains_present = None
+        self.final_countdown_deadline = None
 
     def reset(self):
         if not self.latched:
@@ -137,6 +167,15 @@ class LowBatteryShutdown:
         self.action_state = 'TEST_TRIGGERED'
         return True
 
+    def begin_test_countdown(self, seconds=SHUTDOWN_TEST_COUNTDOWN_SECONDS):
+        self.action_state = 'TEST_COUNTDOWN'
+        self.final_countdown_deadline = self.clock() + max(0.0, seconds)
+
+    def final_countdown_remaining(self):
+        if self.final_countdown_deadline is None:
+            return 0.0
+        return max(0.0, self.final_countdown_deadline - self.clock())
+
     def mark(self, state, error=None):
         self.action_state = state
         self.error = error
@@ -158,6 +197,7 @@ class LowBatteryShutdown:
             'qualification_seconds': self.qualification_seconds,
             'low_for_seconds': round(min(elapsed, self.qualification_seconds), 1),
             'remaining_seconds': round(max(0.0, self.qualification_seconds - elapsed), 1),
+            'final_countdown_seconds': round(self.final_countdown_remaining(), 1),
             'command_gpio': PICO_COMMAND_GPIO,
             'command_physical_pin': PICO_COMMAND_PHYSICAL_PIN,
             'wake_gpio': PICO_WAKE_GPIO,
@@ -177,9 +217,10 @@ def live_sample(settings, battery_monitor=None, mains_monitor=None):
     """Read the two authoritative shutdown inputs without changing GPIO outputs."""
     battery_monitor = battery_monitor or BatteryMonitor()
     mains_monitor = mains_monitor or MainsMonitor()
-    battery = battery_monitor.sample(settings)
-    voltage = battery.get('voltage_v') if battery else None
-    mains = mains_monitor.sample(settings, voltage)
+    with power_input_lock():
+        battery = battery_monitor.sample(settings)
+        voltage = battery.get('voltage_v') if battery else None
+        mains = mains_monitor.sample(settings, voltage)
     return battery, mains
 
 
@@ -205,8 +246,14 @@ def dry_run(settings, threshold, qualification_seconds=30.0,
                    if snapshot['battery_voltage_v'] is not None else 'invalid')
         mains_text = ('present' if mains_present is True else 'absent'
                       if mains_present is False else 'unavailable')
+        reason = ('mains present' if mains_present is True else
+                  'mains unavailable' if mains_present is None else
+                  'battery invalid' if snapshot['battery_voltage_v'] is None else
+                  f"battery above {threshold:.3f} V"
+                  if snapshot['battery_voltage_v'] > threshold else
+                  'qualifying')
         output(f"mains={mains_text} battery={voltage} state={snapshot['state']} "
-               f"remaining={snapshot['remaining_seconds']:.1f}s")
+               f"remaining={snapshot['remaining_seconds']:.1f}s ({reason})")
         if triggered:
             output('DRY RUN PASSED: the shutdown condition would trigger now.')
             return True
