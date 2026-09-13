@@ -9,6 +9,7 @@ DISPLAY_NAMES = {
     "dns": "DNS",
     "battery": "UPS battery",
     "mains": "Mains power",
+    "shutdown": "Low battery shutdown",
 }
 
 
@@ -26,7 +27,8 @@ def probe_lines(result):
     lines = [f"{label}: {'OK' if result[key] else 'FAIL'}"
              for key, label in labels.items() if key in result]
     if isinstance(result.get('voltage_v'), (int, float)):
-        label = 'Battery voltage' if result.get('source') == 'gpio' else 'Voltage'
+        label = ('Battery voltage'
+                 if result.get('source') in ('gpio', 'shutdown') else 'Voltage')
         lines.append(f"{label}: {result['voltage_v']:.3f} V")
     if isinstance(result.get('low_voltage_v'), (int, float)):
         lines.append(f"Low threshold: {result['low_voltage_v']:.2f} V")
@@ -37,7 +39,8 @@ def probe_lines(result):
 
 def build_message(name, new_state, results, trackers):
     down = new_state == "DOWN"
-    event = ('LOW' if down and name == 'battery' else 'lost' if down and name == 'mains'
+    event = ('initiated' if down and name == 'shutdown'
+             else 'LOW' if down and name == 'battery' else 'lost' if down and name == 'mains'
              else 'DOWN' if down else 'restored' if name == 'mains' else 'RECOVERED')
     title = f"{'🚨' if down else '✅'} PiWatch: {getattr(trackers[name], 'display', DISPLAY_NAMES.get(name, name))} {event}"
     lines = ["Node: watchdog-pi", f"Time: {datetime.now().astimezone():%Y-%m-%d %H:%M:%S %Z}", ""]
@@ -51,7 +54,8 @@ def build_message(name, new_state, results, trackers):
 
 def build_lora_messages(name, new_state, results, trackers):
     down = new_state == "DOWN"
-    event = ('LOW' if down and name == 'battery' else 'lost' if down and name == 'mains'
+    event = ('initiated' if down and name == 'shutdown'
+             else 'LOW' if down and name == 'battery' else 'lost' if down and name == 'mains'
              else 'DOWN' if down else 'restored' if name == 'mains' else 'RECOVERED')
     lines = [f"{'🚨' if down else '✅'} PiWatch: {getattr(trackers[name], 'display', DISPLAY_NAMES.get(name, name))} {event}",
              f"Time: {datetime.now().astimezone():%H:%M:%S %Z}"]

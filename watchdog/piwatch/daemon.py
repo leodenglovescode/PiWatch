@@ -12,10 +12,87 @@ from .config_store import SettingsStore
 from .health import health_worker, SystemSampler
 from .mains import MainsMonitor
 from .notifications.outbox import Outbox
+from .ups_supervisor import (LowBatteryShutdown, NOTIFICATION_START_TIMEOUT_SECONDS,
+                             PICO_REGISTER_SECONDS, PicoSupervisor,
+                             SHUTDOWN_VOLTAGE_V, request_poweroff)
 from .state import StateTracker
 from .status import write_status
 
 log = logging.getLogger('piwatch')
+
+
+async def perform_low_battery_shutdown(trackers, results, outbox, gateways,
+                                       shutdown, pico):
+    """Queue the final alert, arm the Pico, and request one clean poweroff."""
+    event_tracker = StateTracker('shutdown', 1, 1, 1)
+    event_tracker.display = 'Low battery shutdown'
+    event_tracker.state = 'DOWN'
+    event_tracker.down_since = time.time()
+    event_trackers = {**trackers, 'shutdown': event_tracker}
+    event_results = {**results, 'shutdown': {
+        'available': True,
+        'sampled': True,
+        'healthy': False,
+        'low': True,
+        'voltage_v': shutdown.last_voltage_v,
+        'low_voltage_v': SHUTDOWN_VOLTAGE_V,
+        'source': 'shutdown',
+    }}
+
+    shutdown.mark('NOTIFYING')
+    try:
+        job_ids = outbox.record(
+            event_trackers, [('shutdown', 'DOWN', event_results)], gateways)
+        if not await outbox.wait_started(
+                job_ids, NOTIFICATION_START_TIMEOUT_SECONDS):
+            log.warning('Final shutdown notification remains queued on one or more channels')
+    except Exception as exc:
+        # Notification failure must not leave the Pi running until brownout.
+        log.error('Could not queue final shutdown notification: %s',
+                  type(exc).__name__)
+
+    shutdown.mark('ARMING')
+    try:
+        await asyncio.to_thread(pico.arm)
+    except Exception as exc:
+        # Protect the filesystem even if automatic wake cannot be armed.
+        shutdown.mark('ARM_FAILED', type(exc).__name__)
+        log.critical('Pico ARM pulse failed; continuing safe shutdown: %s',
+                     type(exc).__name__)
+    else:
+        shutdown.mark('ARMED')
+        await asyncio.sleep(PICO_REGISTER_SECONDS)
+
+    shutdown.mark('POWEROFF_REQUESTED', shutdown.error)
+    try:
+        await asyncio.to_thread(request_poweroff)
+    except Exception as exc:
+        shutdown.mark('POWEROFF_FAILED', type(exc).__name__)
+        log.critical('Clean poweroff request failed: %s', type(exc).__name__)
+
+
+async def low_battery_worker(stop, current, outbox, shutdown, pico, hardware_lock):
+    """Sample the two shutdown inputs independently at approximately 1 Hz."""
+    battery_monitor = BatteryMonitor()
+    mains_monitor = MainsMonitor()
+    while not stop.is_set():
+        cycle = time.monotonic()
+        settings = current['config']['battery']
+        async with hardware_lock:
+            battery = await asyncio.to_thread(battery_monitor.sample, settings)
+            voltage = battery.get('voltage_v') if battery else None
+            mains = await asyncio.to_thread(mains_monitor.sample, settings, voltage)
+        mains_present = (mains.get('gpio_level')
+                         if mains.get('available') is True else None)
+        if shutdown.update(mains_present, battery):
+            await perform_low_battery_shutdown(
+                current['trackers'], current['results'], outbox,
+                current['config']['gateways'], shutdown, pico)
+        try:
+            await asyncio.wait_for(
+                stop.wait(), max(0.05, 1 - (time.monotonic() - cycle)))
+        except asyncio.TimeoutError:
+            pass
 
 
 def process_maintenance(store, outbox):
@@ -96,7 +173,8 @@ async def run(config=None):
     outbox.restore(trackers)
     external = ExternalChecks(config)
     health = {}
-    current = {'config': config, 'revision': revision}
+    current = {'config': config, 'revision': revision,
+               'trackers': trackers, 'results': {}}
     started = time.monotonic()
     system_sampler = SystemSampler()
     battery_monitor = BatteryMonitor(
@@ -105,6 +183,9 @@ async def run(config=None):
     mains_monitor = MainsMonitor(stable_state=(
         trackers['mains'].state == 'UP' if trackers.get('mains') and
         trackers['mains'].state in ('UP', 'DOWN') else None))
+    shutdown_monitor = LowBatteryShutdown()
+    pico = PicoSupervisor()
+    hardware_lock = asyncio.Lock()
     workers = [asyncio.create_task(outbox.work(channel))
                for channel in ('ip', 'ha', 'smtp', 'lora')]
     workers.append(asyncio.create_task(health_worker(health, stop, current)))
@@ -115,6 +196,16 @@ async def run(config=None):
     config_error = None
     log.info('piwatchd starting; targets=%s', ','.join(trackers))
     try:
+        await asyncio.to_thread(pico.disarm)
+    except Exception as exc:
+        shutdown_monitor.mark_startup_disarm(False, type(exc).__name__)
+        log.error('Pico startup DISARM pulse failed: %s', type(exc).__name__)
+    else:
+        shutdown_monitor.mark_startup_disarm(True)
+        log.info('Pico startup DISARM pulse sent on GPIO2')
+    workers.append(asyncio.create_task(low_battery_worker(
+        stop, current, outbox, shutdown_monitor, pico, hardware_lock)))
+    try:
         while not stop.is_set():
             cycle = time.monotonic()
             if store.path.exists():
@@ -123,7 +214,8 @@ async def run(config=None):
                     if new_revision != revision:
                         trackers = reconcile_trackers(new_config, config, trackers)
                         config, revision = new_config, new_revision
-                        current.update(config=config, revision=revision)
+                        current.update(config=config, revision=revision,
+                                       trackers=trackers, results={})
                         external = ExternalChecks(config)
                         battery_monitor = BatteryMonitor(
                             battery_low=(trackers.get('battery') is not None and
@@ -131,6 +223,7 @@ async def run(config=None):
                         mains_monitor = MainsMonitor(stable_state=(
                             trackers['mains'].state == 'UP' if trackers.get('mains') and
                             trackers['mains'].state in ('UP', 'DOWN') else None))
+                        shutdown_monitor.reset()
                         next_probe = 0
                         results = {}
                         local_results = {}
@@ -146,8 +239,9 @@ async def run(config=None):
                     values = await check_all(config)
                     if (config['battery']['enabled'] or
                             config['battery']['mains_detection_enabled']):
-                        battery_value = await asyncio.to_thread(
-                            battery_monitor.sample, config['battery'])
+                        async with hardware_lock:
+                            battery_value = await asyncio.to_thread(
+                                battery_monitor.sample, config['battery'])
                     if config['battery']['enabled']:
                         values['battery'] = battery_value
                     return {name: {'checked_at': time.time(), 'sampled': True, **value}
@@ -156,13 +250,15 @@ async def run(config=None):
             local_results, remote = await asyncio.gather(local_sample(), external.collect())
             if config['battery']['mains_detection_enabled']:
                 voltage = battery_value.get('voltage_v') if battery_value else None
-                mains_value = await asyncio.to_thread(
-                    mains_monitor.sample, config['battery'], voltage)
+                async with hardware_lock:
+                    mains_value = await asyncio.to_thread(
+                        mains_monitor.sample, config['battery'], voltage)
                 local_results['mains'] = {
                     'checked_at': time.time(), 'sampled': True, **mains_value}
             if sample_local:
                 next_probe = cycle + config['interval_seconds']
             results = {**local_results, **remote}
+            current.update(trackers=trackers, results=results)
             transitions = []
             for name, tracker in trackers.items():
                 if results[name].get('sampled', True):
@@ -185,7 +281,8 @@ async def run(config=None):
             process_maintenance(store, outbox)
             outbox.maintain()
             write_status(results, trackers, outbox, health, config, started,
-                         revision=revision, config_error=config_error, metrics=metrics)
+                         revision=revision, config_error=config_error, metrics=metrics,
+                         ups_supervisor=shutdown_monitor.snapshot())
             try:
                 await asyncio.wait_for(stop.wait(), max(.05, 1 - (time.monotonic() - cycle)))
             except asyncio.TimeoutError:

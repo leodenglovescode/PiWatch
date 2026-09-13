@@ -11,7 +11,7 @@ STATUS_PATH = os.environ.get('PIWATCH_STATUS_PATH', '/run/piwatch/status.json')
 
 
 def write_status(results, trackers, outbox, health, config, started, path=STATUS_PATH,
-                 revision=0, config_error=None, metrics=None):
+                 revision=0, config_error=None, metrics=None, ups_supervisor=None):
     now = time.time()
     data = {
         'schema_version': 2,
@@ -26,6 +26,7 @@ def write_status(results, trackers, outbox, health, config, started, path=STATUS
         'targets': {},
         'self_health': health,
         'metrics': metrics or {},
+        'ups_supervisor': ups_supervisor or {},
         'notifications': outbox.summary(),
         'notification_jobs': outbox.attention(),
         'incidents': outbox.history(),

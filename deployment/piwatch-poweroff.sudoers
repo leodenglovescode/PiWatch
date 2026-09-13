@@ -1,0 +1,2 @@
+# Permit only PiWatch's noninteractive clean poweroff request.
+piwatch ALL=(root) NOPASSWD: /usr/bin/systemctl --no-block poweroff

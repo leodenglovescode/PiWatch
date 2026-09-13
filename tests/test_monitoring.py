@@ -9,6 +9,7 @@ import sqlite3
 import sys
 import tempfile
 import time
+import types
 import unittest
 from unittest.mock import AsyncMock, patch
 
@@ -21,6 +22,8 @@ from piwatch.config_store import SettingsStore, ConflictError
 from piwatch.mains import MainsMonitor
 from piwatch.notifications import outbox
 from piwatch.notifications.messages import build_lora_messages, build_message
+from piwatch import ups_supervisor
+from piwatch.ups_supervisor import LowBatteryShutdown, PicoSupervisor
 from piwatch.state import StateTracker
 
 
@@ -137,6 +140,122 @@ class BatteryTests(unittest.TestCase):
             raise PermissionError()
         sample = BatteryMonitor(reader=unavailable).sample(self.settings())
         self.assertFalse(sample['sampled'])
+
+
+class PowerSupervisorTests(unittest.TestCase):
+    @staticmethod
+    def battery(voltage=3.05, available=True, sampled=True):
+        return {'voltage_v': voltage, 'available': available, 'sampled': sampled}
+
+    def test_requires_thirty_continuous_seconds_of_valid_low_voltage(self):
+        now = [0.0]
+        monitor = LowBatteryShutdown(clock=lambda: now[0])
+        for second in range(30):
+            now[0] = float(second)
+            self.assertFalse(monitor.update(False, self.battery()))
+        now[0] = 30.0
+        self.assertTrue(monitor.update(False, self.battery()))
+        self.assertTrue(monitor.latched)
+        now[0] = 31.0
+        self.assertFalse(monitor.update(False, self.battery()))
+
+    def test_mains_recovery_invalid_reading_and_voltage_recovery_reset_timer(self):
+        now = [0.0]
+        monitor = LowBatteryShutdown(clock=lambda: now[0])
+        self.assertFalse(monitor.update(False, self.battery()))
+        for reset_sample, mains in (
+                (self.battery(available=False, sampled=False), False),
+                (self.battery(3.051), False),
+                (self.battery(), True)):
+            now[0] += 20
+            self.assertFalse(monitor.update(mains, reset_sample))
+            self.assertIsNone(monitor.low_since)
+            now[0] += 1
+            self.assertFalse(monitor.update(False, self.battery()))
+        now[0] += 29.9
+        self.assertFalse(monitor.update(False, self.battery()))
+        now[0] += 0.1
+        self.assertTrue(monitor.update(False, self.battery()))
+
+    def test_gpio2_pulses_only_low_and_returns_to_input(self):
+        durations = []
+        requests = []
+
+        class Request:
+            def __init__(self):
+                self.reconfigured = []
+                self.released = False
+
+            def reconfigure_lines(self, settings):
+                self.reconfigured.append(settings)
+
+            def release(self):
+                self.released = True
+
+        def request_lines(chip, **kwargs):
+            request = Request()
+            requests.append((chip, kwargs, request))
+            return request
+
+        direction = types.SimpleNamespace(OUTPUT='output', INPUT='input')
+        value = types.SimpleNamespace(INACTIVE='low')
+        fake_gpiod = types.SimpleNamespace(
+            LineSettings=lambda **kwargs: kwargs, request_lines=request_lines)
+        fake_line = types.SimpleNamespace(Direction=direction, Value=value)
+        with patch.dict(sys.modules, {'gpiod': fake_gpiod, 'gpiod.line': fake_line}):
+            supervisor = PicoSupervisor(sleeper=durations.append)
+            supervisor.disarm()
+            supervisor.arm()
+
+        self.assertEqual(durations, [0.150, 1.0])
+        self.assertEqual([request[0] for request in requests], ['/dev/gpiochip0'] * 2)
+        for _, kwargs, request in requests:
+            self.assertEqual(kwargs['config'][2], {
+                'direction': 'output', 'output_value': 'low'})
+            self.assertEqual(request.reconfigured, [{2: {'direction': 'input'}}])
+            self.assertTrue(request.released)
+
+    def test_poweroff_uses_only_the_authorized_noninteractive_command(self):
+        with patch.object(ups_supervisor.subprocess, 'run') as run:
+            ups_supervisor.request_poweroff()
+        run.assert_called_once_with(
+            ups_supervisor.POWEROFF_COMMAND, check=True, timeout=10)
+
+
+class ShutdownActionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_final_alert_precedes_arm_and_poweroff(self):
+        events = []
+
+        class Box:
+            def record(self, trackers, incidents, gateways):
+                events.append('notify')
+                self.incidents = incidents
+                return ['shutdown:ha', 'shutdown:smtp', 'shutdown:lora']
+
+            async def wait_started(self, job_ids, timeout):
+                events.append('delivery-started')
+                return True
+
+        shutdown = LowBatteryShutdown(clock=lambda: 30)
+        shutdown.last_voltage_v = 3.05
+        shutdown.latched = True
+        pico = types.SimpleNamespace(arm=lambda: events.append('arm'))
+
+        def poweroff():
+            events.append('poweroff')
+
+        async def immediate(function, *args):
+            return function(*args)
+
+        with patch.object(daemon, 'request_poweroff', side_effect=poweroff), \
+             patch.object(daemon, 'PICO_REGISTER_SECONDS', 0), \
+             patch.object(daemon.asyncio, 'to_thread', side_effect=immediate):
+            await daemon.perform_low_battery_shutdown(
+                {}, {}, Box(), {}, shutdown, pico)
+
+        self.assertEqual(events,
+                         ['notify', 'delivery-started', 'arm', 'poweroff'])
+        self.assertEqual(shutdown.action_state, 'POWEROFF_REQUESTED')
 
 
 class MainsTests(unittest.TestCase):
@@ -288,9 +407,31 @@ class ProbeTests(unittest.IsolatedAsyncioTestCase):
                 await stop.wait()
             loop = asyncio.get_running_loop()
             factory = lambda **kw: outbox.Outbox(Path(temp) / 'outbox.sqlite3', **kw)
-            with patch.object(daemon, 'SettingsStore', return_value=store), patch.object(daemon, 'Outbox', side_effect=factory), patch.object(daemon, 'check_all', side_effect=local), patch.object(daemon, 'health_worker', side_effect=health), patch.object(daemon, 'write_status', side_effect=write), patch.object(loop, 'add_signal_handler', side_effect=lambda sig, fn: handlers.update({sig:fn})), patch.object(loop, 'remove_signal_handler'):
+            battery = types.SimpleNamespace(sample=lambda *_: {
+                'available': False, 'sampled': False, 'healthy': None})
+            mains = types.SimpleNamespace(sample=lambda *_: {
+                'available': True, 'sampled': True, 'healthy': True,
+                'gpio_level': True})
+            pico_calls = []
+            pico = types.SimpleNamespace(
+                disarm=lambda: pico_calls.append('disarm'), arm=lambda: None)
+            async def immediate(function, *args):
+                return function(*args)
+            with patch.object(daemon, 'SettingsStore', return_value=store), \
+                 patch.object(daemon, 'Outbox', side_effect=factory), \
+                 patch.object(daemon, 'BatteryMonitor', return_value=battery), \
+                 patch.object(daemon, 'MainsMonitor', return_value=mains), \
+                 patch.object(daemon, 'PicoSupervisor', return_value=pico), \
+                 patch.object(daemon.asyncio, 'to_thread', side_effect=immediate), \
+                 patch.object(daemon, 'check_all', side_effect=local), \
+                 patch.object(daemon, 'health_worker', side_effect=health), \
+                 patch.object(daemon, 'write_status', side_effect=write), \
+                 patch.object(loop, 'add_signal_handler',
+                              side_effect=lambda sig, fn: handlers.update({sig: fn})), \
+                 patch.object(loop, 'remove_signal_handler'):
                 await asyncio.wait_for(daemon.run(), 5)
             self.assertEqual(revisions, [1, 2])
+            self.assertEqual(pico_calls, ['disarm'])
 
 
 class HistoryTests(unittest.TestCase):
@@ -401,6 +542,29 @@ class HistoryTests(unittest.TestCase):
         trackers['mains'].state = 'UP'
         restored_title, _ = build_message('mains', 'UP', results, trackers)
         self.assertIn('Mains power restored', restored_title)
+
+    def test_shutdown_notification_is_urgent_and_fans_out_to_all_gateways(self):
+        value = validate_config({'targets': []})
+        trackers = daemon.reconcile_trackers(value, {}, {})
+        shutdown = StateTracker('shutdown', 1, 1, 1)
+        shutdown.display = 'Low battery shutdown'
+        shutdown.state = 'DOWN'
+        event_trackers = {**trackers, 'shutdown': shutdown}
+        results = {name: {'healthy': True} for name in event_trackers}
+        results['shutdown'] = {
+            'healthy': False, 'voltage_v': 3.05, 'low_voltage_v': 3.05,
+            'source': 'shutdown',
+        }
+        job_ids = self.box.record(
+            event_trackers, [('shutdown', 'DOWN', results)], value['gateways'])
+        rows = self.box.db.execute(
+            'SELECT channel, payload, priority FROM jobs ORDER BY channel').fetchall()
+        self.assertEqual([row[0] for row in rows], ['ha', 'lora', 'smtp'])
+        self.assertTrue(all(row[2] == 1 for row in rows))
+        self.assertEqual(len(job_ids), 3)
+        payload = json.loads(next(row[1] for row in rows if row[0] == 'ha'))
+        self.assertIn('Low battery shutdown initiated', payload['title'])
+        self.assertIn('Battery voltage: 3.050 V', payload['message'])
 
     def test_failure_rolls_back_history_and_state(self):
         with patch.object(outbox, 'build_lora_messages', side_effect=ValueError('test')):

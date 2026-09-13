@@ -41,5 +41,9 @@ password/CSRF/session protection, TOTP replay rejection, verified email challeng
 recovery-code single use and stale status detection. They do not open hardware,
 read deployment secret files, or send notifications.
 
+The power-supervisor regressions use fake GPIO requests, a synthetic monotonic
+clock, and a mocked `systemctl` subprocess. They never pulse a real GPIO or request
+a real shutdown.
+
 After an authorized deployment, hardware validation still needs an intended test
 window/destination. Follow `deployment/WEB_PANEL.md` and `deployment/README.md`.

@@ -27,7 +27,8 @@ from contextlib import closing
 backup, source = map(Path, sys.argv[1:])
 paths = ['/usr/local/lib/piwatch', '/etc/systemd/system/piwatch.service',
          '/etc/systemd/system/piwatch.service.d', '/etc/systemd/system/piwatch-web.service',
-         '/etc/systemd/system/piwatch-web.service.d', '/etc/piwatch/config.json']
+         '/etc/systemd/system/piwatch-web.service.d', '/etc/piwatch/config.json',
+         '/etc/sudoers.d/piwatch-poweroff']
 for raw in paths:
     path = Path(raw)
     if path.exists():
@@ -98,6 +99,8 @@ cp -a "$PIWATCH_STAGE/piwatch" "$PIWATCH_STAGE/piwatchd.py" "$PIWATCH_STAGE/web"
 install -m 0644 deployment/piwatch-web.service /etc/systemd/system/piwatch-web.service
 install -d -m 0755 /etc/systemd/system/piwatch.service.d
 install -m 0644 deployment/piwatch-config.conf /etc/systemd/system/piwatch.service.d/config.conf
+visudo -cf deployment/piwatch-poweroff.sudoers
+install -o root -g root -m 0440 deployment/piwatch-poweroff.sudoers /etc/sudoers.d/piwatch-poweroff
 systemd-analyze verify /etc/systemd/system/piwatch-web.service /etc/systemd/system/piwatch.service
 systemctl daemon-reload
 systemctl restart lora-notifyd

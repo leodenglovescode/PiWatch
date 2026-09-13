@@ -78,10 +78,19 @@ function formatBytesPerSecond(value) {
   return `${(value / 1024 ** 3).toFixed(1)} GB/s`;
 }
 
-function deriveOverallState(isFresh, targets, notifications, monitorState) {
+function upsSupervisorState(supervisor) {
+  if (!supervisor?.state) return 'UNKNOWN';
+  if (supervisor.error || supervisor.startup_disarmed === false
+      || supervisor.state === 'POWEROFF_FAILED') return 'DOWN';
+  if (supervisor.state !== 'IDLE') return 'SUSPECT';
+  return 'UP';
+}
+
+function deriveOverallState(isFresh, targets, notifications, monitorState, supervisorState) {
   if (!isFresh) return 'STALE';
-  if (targets.down) return 'DOWN';
-  if (targets.suspect || targets.unknown || notifications.failed || monitorState !== 'UP') return 'DEGRADED';
+  if (targets.down || supervisorState === 'DOWN') return 'DOWN';
+  if (targets.suspect || targets.unknown || notifications.failed || monitorState !== 'UP'
+      || supervisorState === 'SUSPECT') return 'DEGRADED';
   return 'UP';
 }
 
@@ -119,7 +128,8 @@ const Dashboard = {
       { pending: 0, failed: 0, done: 0 }
     ));
     const overallState = computed(() => deriveOverallState(fresh.value, targetCounts.value,
-      notificationCounts.value, snapshot.value?.monitor?.state));
+      notificationCounts.value, snapshot.value?.monitor?.state,
+      upsSupervisorState(snapshot.value?.ups_supervisor)));
 
     function addMetricSample(metrics) {
       if (!metrics?.checked_at || metrics.checked_at === lastMetricSample) return;
@@ -296,6 +306,7 @@ const Dashboard = {
       const gps = health.gps || {};
       const battery = snapshot.value?.targets?.battery;
       const mains = snapshot.value?.targets?.mains;
+      const supervisor = snapshot.value?.ups_supervisor;
       const gpsFix = gps.mode === 3 ? '3D fix' : gps.mode === 2 ? '2D fix' : 'No fix';
       const satellites = Number.isFinite(gps.seen) && Number.isFinite(gps.used)
         ? `${gps.used} used / ${gps.seen} seen` : 'Awaiting complete SKY report';
@@ -306,6 +317,22 @@ const Dashboard = {
         healthCard('LoRa gateway', healthState(health.radio), [['USB radio', health.radio?.radio_connected ? 'Connected' : 'Disconnected'], ['Delivery proof', 'Destination ACK'], ['Health sample', health.radio?.checked_at ? `${PW.age(Date.now() / 1000 - health.radio.checked_at)} ago` : '—']], 'health-radio'),
         healthCard('Application services', healthState(health.services), serviceValues.length ? serviceValues.map(([name, state]) => [name, state]) : [['Status', 'No sample']], 'health-services')
       ];
+      if (supervisor?.state) {
+        const supervisorHealth = upsSupervisorState(supervisor);
+        const phase = {
+          IDLE: 'Standing by', QUALIFYING: 'Confirming low battery', TRIGGERED: 'Shutdown triggered',
+          NOTIFYING: 'Sending final alert', ARMING: 'Arming Pico', ARMED: 'Pico armed',
+          ARM_FAILED: 'Pico ARM failed', POWEROFF_REQUESTED: 'Poweroff requested',
+          POWEROFF_FAILED: 'Poweroff failed'
+        }[supervisor.state] || supervisor.state;
+        cards.unshift(healthCard('UPS supervisor', supervisorHealth, [
+          ['State', phase],
+          ['Shutdown rule', `≤ ${supervisor.shutdown_voltage_v.toFixed(2)} V for ${supervisor.qualification_seconds.toFixed(0)} s`],
+          ['Qualification', supervisor.state === 'QUALIFYING' ? `${supervisor.remaining_seconds.toFixed(1)} s remaining` : 'Not active'],
+          ['Pico command', `GPIO${supervisor.command_gpio} · physical pin ${supervisor.command_physical_pin}`],
+          ['Command health', supervisor.error || supervisor.startup_error || 'Ready']
+        ], 'health-supervisor'));
+      }
       if (battery) cards.unshift(healthCard('UPS battery', targetState('battery', battery), [
         ['Voltage', Number.isFinite(battery.voltage_v) ? `${battery.voltage_v.toFixed(3)} V` : 'Unavailable'],
         ['Low alarm', `${battery.low_voltage_v.toFixed(2)} V`],

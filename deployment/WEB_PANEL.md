@@ -92,6 +92,16 @@ present and LOW means it is absent. A configurable two-to-three-second debounce
 filters short changes. Alerts include the latest INA219 battery voltage when it is
 available; INA219 readings do not determine mains state.
 
+The Operational checks panel also shows the Pico UPS supervisor. Automatic
+shutdown has a fixed safety rule: raw GPIO17 must remain LOW while a fresh INA219
+reading remains at or below 3.05 V for 30 continuous seconds, sampled about once
+per second. GPIO17 HIGH, an invalid INA219 sample, or any reading above 3.05 V
+immediately resets the entire timer. After qualification, PiWatch latches the
+action, queues a final alert independently for every enabled gateway, pulses GPIO2
+LOW for one second to arm the Pico, releases GPIO2 to input, and requests a clean
+poweroff. At service startup it sends one 150 ms GPIO2 LOW pulse to disarm the
+Pico. PiWatch never requests GPIO3, which remains the Pico-controlled wake input.
+
 The original `config.json` is only the initial import/fallback. Once the SQLite
 settings DB exists, changes to that JSON do not alter live monitoring. Radio USB
 selection, Meshtastic destination/ACK timeout, web listener address, and process

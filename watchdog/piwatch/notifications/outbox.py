@@ -39,7 +39,8 @@ class Outbox:
                 stage INTEGER NOT NULL DEFAULT 0, attempts INTEGER NOT NULL DEFAULT 0,
                 next_attempt REAL NOT NULL DEFAULT 0,
                 status TEXT NOT NULL DEFAULT 'pending', last_error TEXT,
-                created_at REAL NOT NULL DEFAULT 0, finished_at REAL);
+                created_at REAL NOT NULL DEFAULT 0, finished_at REAL,
+                priority INTEGER NOT NULL DEFAULT 0);
             CREATE TABLE IF NOT EXISTS incidents (
                 id TEXT PRIMARY KEY, timestamp REAL NOT NULL,
                 target TEXT NOT NULL, state TEXT NOT NULL,
@@ -55,6 +56,9 @@ class Outbox:
             self.db.execute('ALTER TABLE jobs ADD COLUMN created_at REAL NOT NULL DEFAULT 0')
         if 'finished_at' not in job_columns:
             self.db.execute('ALTER TABLE jobs ADD COLUMN finished_at REAL')
+        if 'priority' not in job_columns:
+            self.db.execute(
+                'ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 0')
         now = time.time()
         self.db.execute(
             "UPDATE jobs SET created_at=COALESCE((SELECT timestamp FROM incidents "
@@ -147,6 +151,7 @@ class Outbox:
                 trackers[name].failures = trackers[name].successes = 0
 
     def record(self, trackers, incidents, gateways=None):
+        job_ids = []
         with self.db:
             for name, tracker in trackers.items():
                 self.db.execute("INSERT OR REPLACE INTO trackers VALUES (?, ?)",
@@ -168,7 +173,7 @@ class Outbox:
                 severity = "critical" if state == "DOWN" else "recovery"
                 lora_payload = {"messages": [primary, secondary],
                                 "modes": ["alert" if state == "DOWN" else "text", "text"]}
-                if name == 'mains':
+                if name in ('mains', 'shutdown'):
                     # A power event fans out independently so one failed gateway
                     # never suppresses or duplicates another successful delivery.
                     payloads = {
@@ -195,8 +200,30 @@ class Outbox:
                             continue
                         payload['gateways'] = gateways
                     self.db.execute(
-                        "INSERT INTO jobs (id, channel, payload, created_at) VALUES (?, ?, ?, ?)",
-                        (incident_id + ":" + channel, channel, json.dumps(payload), time.time()))
+                        "INSERT INTO jobs (id, channel, payload, created_at, priority) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (incident_id + ":" + channel, channel, json.dumps(payload),
+                         time.time(), 1 if name == 'shutdown' else 0))
+                    job_ids.append(incident_id + ':' + channel)
+        return job_ids
+
+    async def wait_started(self, job_ids, timeout):
+        """Wait briefly until every urgent job has entered a delivery attempt."""
+        if not job_ids:
+            return True
+        deadline = time.monotonic() + timeout
+        placeholders = ','.join('?' for _ in job_ids)
+        while time.monotonic() < deadline:
+            rows = self.db.execute(
+                f"SELECT id, status, stage, attempts FROM jobs WHERE id IN ({placeholders})",
+                job_ids,
+            ).fetchall()
+            if len(rows) == len(job_ids) and all(
+                    status != 'pending' or stage > 0 or attempts > 0
+                    for _, status, stage, attempts in rows):
+                return True
+            await asyncio.sleep(0.05)
+        return False
 
     def history(self, limit=100):
         rows = self.db.execute(
@@ -226,10 +253,12 @@ class Outbox:
 
     async def work(self, channel):
         while self.is_running():
-            # Preserve incident order within a channel, including retry backoff.
+            # A final shutdown alert preempts ordinary work; order is preserved
+            # within each priority, including retry backoff.
             row = self.db.execute(
                 "SELECT id, payload, stage, attempts, next_attempt FROM jobs "
-                "WHERE channel=? AND status='pending' ORDER BY rowid LIMIT 1",
+                "WHERE channel=? AND status='pending' "
+                "ORDER BY priority DESC, rowid LIMIT 1",
                 (channel,),
             ).fetchone()
             if row is None or row[4] > time.time():

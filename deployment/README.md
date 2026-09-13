@@ -21,9 +21,16 @@ Systemd creates private persistent directories:
 - `/var/lib/lora-notifyd/delivery.sqlite3`: request IDs, payload hashes, and cached
   successful results. Preserve this database when restarting or rolling back.
 
-Each notification channel runs in incident order. Ordinary IP notifications use
+`deployment/piwatch-poweroff.sudoers` grants the unprivileged `piwatch` account
+only the exact noninteractive `/usr/bin/systemctl --no-block poweroff` command.
+The install/update scripts validate it with `visudo`, install it as root-owned
+mode `0440`, and include the previous rule in deployment backup and rollback.
+
+Each notification channel runs in incident order within its priority. Ordinary IP notifications use
 Home Assistant with SMTP fallback. Mains outage/restoration notifications instead
 use independent `ha`, `smtp`, and `lora` jobs so every enabled path is attempted.
+The final low-battery shutdown event uses the same independent fan-out and is
+placed ahead of ordinary queued work in each channel before the Pico ARM pulse.
 LoRa primary/context messages
 have separate durable checkpoints and stable request IDs. A channel/stage gets
 five attempts with 5, 10, 20, and 40 seconds between failures. Failed jobs remain

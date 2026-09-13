@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Update the installed watchdog package and web panel without touching hardware services.
+# Update the installed watchdog package and web panel with guarded rollback.
 set -euo pipefail
 
 if [[ ${EUID} -ne 0 ]]; then
@@ -34,6 +34,12 @@ cleanup() {
         elif [[ -f "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service.d/config.conf" ]]; then
             cp -a "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service.d/config.conf" /etc/systemd/system/piwatch.service.d/config.conf
         fi
+        rm -f /etc/sudoers.d/piwatch-poweroff
+        if [[ -f "$PIWATCH_STAGE/installed-poweroff-sudoers" ]]; then
+            mv "$PIWATCH_STAGE/installed-poweroff-sudoers" /etc/sudoers.d/piwatch-poweroff
+        elif [[ -f "$PIWATCH_BACKUP/etc/sudoers.d/piwatch-poweroff" ]]; then
+            cp -a "$PIWATCH_BACKUP/etc/sudoers.d/piwatch-poweroff" /etc/sudoers.d/piwatch-poweroff
+        fi
         systemctl daemon-reload
         systemctl start piwatch
         systemctl start piwatch-web
@@ -55,10 +61,14 @@ PY
 
 install -d -m 0700 "$PIWATCH_BACKUP/usr/local/lib/piwatch"
 install -d -m 0700 "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service.d"
+install -d -m 0700 "$PIWATCH_BACKUP/etc/sudoers.d"
 cp -a /usr/local/lib/piwatch/piwatch "$PIWATCH_BACKUP/usr/local/lib/piwatch/piwatch"
 cp -a /usr/local/lib/piwatch/web "$PIWATCH_BACKUP/usr/local/lib/piwatch/web"
 if [[ -f /etc/systemd/system/piwatch.service.d/config.conf ]]; then
     cp -a /etc/systemd/system/piwatch.service.d/config.conf "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service.d/config.conf"
+fi
+if [[ -f /etc/sudoers.d/piwatch-poweroff ]]; then
+    cp -a /etc/sudoers.d/piwatch-poweroff "$PIWATCH_BACKUP/etc/sudoers.d/piwatch-poweroff"
 fi
 python3 - "$PIWATCH_BACKUP" <<'PY'
 from contextlib import closing
@@ -88,6 +98,7 @@ shutil.copytree('watchdog/piwatch', stage / 'new-piwatch',
                 ignore=shutil.ignore_patterns('__pycache__'))
 shutil.copytree('web', stage / 'new-web', ignore=shutil.ignore_patterns('__pycache__'))
 shutil.copy2('deployment/piwatch-config.conf', stage / 'new-config.conf')
+shutil.copy2('deployment/piwatch-poweroff.sudoers', stage / 'new-poweroff-sudoers')
 PY
 
 SERVICES_STOPPED=1
@@ -101,6 +112,11 @@ if [[ -f /etc/systemd/system/piwatch.service.d/config.conf ]]; then
     mv /etc/systemd/system/piwatch.service.d/config.conf "$PIWATCH_STAGE/installed-config.conf"
 fi
 mv "$PIWATCH_STAGE/new-config.conf" /etc/systemd/system/piwatch.service.d/config.conf
+if [[ -f /etc/sudoers.d/piwatch-poweroff ]]; then
+    mv /etc/sudoers.d/piwatch-poweroff "$PIWATCH_STAGE/installed-poweroff-sudoers"
+fi
+visudo -cf "$PIWATCH_STAGE/new-poweroff-sudoers"
+install -o root -g root -m 0440 "$PIWATCH_STAGE/new-poweroff-sudoers" /etc/sudoers.d/piwatch-poweroff
 chown piwatch-web:piwatch-config /var/lib/piwatch-config/settings.sqlite3
 chmod 2770 /var/lib/piwatch-config
 chmod 0660 /var/lib/piwatch-config/settings.sqlite3
@@ -150,8 +166,11 @@ while time.monotonic() < deadline:
         mains_ready = (mains is None or
                        (mains.get('state') in ('UP', 'DOWN') and
                         isinstance(mains.get('gpio_level'), bool)))
+        supervisor = status.get('ups_supervisor', {})
+        supervisor_ready = (supervisor.get('state') == 'IDLE' and
+                            supervisor.get('startup_disarmed') is True)
         if (time.time() - status['generated_at'] < 4 and 'cpu_percent' in metrics and
-                battery_ready and mains_ready):
+                battery_ready and mains_ready and supervisor_ready):
             gps = status.get('self_health', {}).get('gps', {})
             print('GPS: mode={mode}, seen={seen}, used={used}'.format(
                 mode=gps.get('mode', '?'), seen=gps.get('seen', '?'), used=gps.get('used', '?')))
@@ -160,12 +179,14 @@ while time.monotonic() < deadline:
             if mains:
                 print('Mains: {state} (GPIO{gpio} {level}, {debounce_seconds:g} s debounce)'.format(
                     level='HIGH' if mains['gpio_level'] else 'LOW', **mains))
+            print('Pico supervisor: DISARM sent; shutdown at <= {shutdown_voltage_v:.2f} V for '
+                  '{qualification_seconds:.0f} s'.format(**supervisor))
             break
     except (OSError, ValueError, KeyError):
         pass
     time.sleep(.5)
 else:
-    raise SystemExit('Fresh metrics, battery voltage, and GPIO mains state did not appear within 12 seconds')
+    raise SystemExit('Fresh metrics, battery, GPIO mains, and Pico supervisor state did not appear within 12 seconds')
 PY
 
 systemctl is-active --quiet piwatch
