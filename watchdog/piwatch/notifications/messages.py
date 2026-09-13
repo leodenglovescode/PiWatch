@@ -10,6 +10,7 @@ DISPLAY_NAMES = {
     "battery": "UPS battery",
     "mains": "Mains power",
     "shutdown": "Low battery shutdown",
+    "shutdown_test": "UPS shutdown test",
 }
 
 
@@ -39,7 +40,7 @@ def probe_lines(result):
 
 def build_message(name, new_state, results, trackers):
     down = new_state == "DOWN"
-    event = ('initiated' if down and name == 'shutdown'
+    event = ('initiated' if down and name in ('shutdown', 'shutdown_test')
              else 'LOW' if down and name == 'battery' else 'lost' if down and name == 'mains'
              else 'DOWN' if down else 'restored' if name == 'mains' else 'RECOVERED')
     title = f"{'🚨' if down else '✅'} PiWatch: {getattr(trackers[name], 'display', DISPLAY_NAMES.get(name, name))} {event}"
@@ -54,7 +55,7 @@ def build_message(name, new_state, results, trackers):
 
 def build_lora_messages(name, new_state, results, trackers):
     down = new_state == "DOWN"
-    event = ('initiated' if down and name == 'shutdown'
+    event = ('initiated' if down and name in ('shutdown', 'shutdown_test')
              else 'LOW' if down and name == 'battery' else 'lost' if down and name == 'mains'
              else 'DOWN' if down else 'restored' if name == 'mains' else 'RECOVERED')
     lines = [f"{'🚨' if down else '✅'} PiWatch: {getattr(trackers[name], 'display', DISPLAY_NAMES.get(name, name))} {event}",

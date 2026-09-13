@@ -18,6 +18,7 @@ cleanup() {
     if [[ $status -ne 0 && $SERVICES_STOPPED -eq 1 ]]; then
         echo 'Update failed; restoring the installed watchdog and web panel.' >&2
         rm -rf /usr/local/lib/piwatch/piwatch /usr/local/lib/piwatch/web
+        rm -f /usr/local/lib/piwatch/piwatchd.py
         if [[ -d "$PIWATCH_STAGE/installed-piwatch" ]]; then
             mv "$PIWATCH_STAGE/installed-piwatch" /usr/local/lib/piwatch/piwatch
         else
@@ -27,6 +28,11 @@ cleanup() {
             mv "$PIWATCH_STAGE/installed-web" /usr/local/lib/piwatch/web
         else
             cp -a "$PIWATCH_BACKUP/usr/local/lib/piwatch/web" /usr/local/lib/piwatch/web
+        fi
+        if [[ -f "$PIWATCH_STAGE/installed-piwatchd.py" ]]; then
+            mv "$PIWATCH_STAGE/installed-piwatchd.py" /usr/local/lib/piwatch/piwatchd.py
+        else
+            cp -a "$PIWATCH_BACKUP/usr/local/lib/piwatch/piwatchd.py" /usr/local/lib/piwatch/piwatchd.py
         fi
         rm -f /etc/systemd/system/piwatch.service.d/config.conf
         if [[ -f "$PIWATCH_STAGE/installed-config.conf" ]]; then
@@ -64,6 +70,7 @@ install -d -m 0700 "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service.d"
 install -d -m 0700 "$PIWATCH_BACKUP/etc/sudoers.d"
 cp -a /usr/local/lib/piwatch/piwatch "$PIWATCH_BACKUP/usr/local/lib/piwatch/piwatch"
 cp -a /usr/local/lib/piwatch/web "$PIWATCH_BACKUP/usr/local/lib/piwatch/web"
+cp -a /usr/local/lib/piwatch/piwatchd.py "$PIWATCH_BACKUP/usr/local/lib/piwatch/piwatchd.py"
 if [[ -f /etc/systemd/system/piwatch.service.d/config.conf ]]; then
     cp -a /etc/systemd/system/piwatch.service.d/config.conf "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service.d/config.conf"
 fi
@@ -97,6 +104,7 @@ stage = Path(sys.argv[1])
 shutil.copytree('watchdog/piwatch', stage / 'new-piwatch',
                 ignore=shutil.ignore_patterns('__pycache__'))
 shutil.copytree('web', stage / 'new-web', ignore=shutil.ignore_patterns('__pycache__'))
+shutil.copy2('watchdog/piwatchd.py', stage / 'new-piwatchd.py')
 shutil.copy2('deployment/piwatch-config.conf', stage / 'new-config.conf')
 shutil.copy2('deployment/piwatch-poweroff.sudoers', stage / 'new-poweroff-sudoers')
 PY
@@ -108,6 +116,8 @@ mv /usr/local/lib/piwatch/piwatch "$PIWATCH_STAGE/installed-piwatch"
 mv "$PIWATCH_STAGE/new-piwatch" /usr/local/lib/piwatch/piwatch
 mv /usr/local/lib/piwatch/web "$PIWATCH_STAGE/installed-web"
 mv "$PIWATCH_STAGE/new-web" /usr/local/lib/piwatch/web
+mv /usr/local/lib/piwatch/piwatchd.py "$PIWATCH_STAGE/installed-piwatchd.py"
+mv "$PIWATCH_STAGE/new-piwatchd.py" /usr/local/lib/piwatch/piwatchd.py
 if [[ -f /etc/systemd/system/piwatch.service.d/config.conf ]]; then
     mv /etc/systemd/system/piwatch.service.d/config.conf "$PIWATCH_STAGE/installed-config.conf"
 fi

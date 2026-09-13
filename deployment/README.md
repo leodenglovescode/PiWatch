@@ -54,6 +54,45 @@ message when delivery succeeded but its ACK was lost, or after a crash between
 delivery and cache commit. HA/SMTP have the same ambiguous-delivery limitation;
 this is not exactly-once delivery.
 
+## UPS supervisor CLI tests
+
+These commands are available after deployment through the installed entry point.
+They do not alter the fixed production threshold or leave a persistent test mode.
+
+Exercise the real GPIO17 and INA219 inputs with a temporary dry-run threshold:
+
+```bash
+sudo /usr/bin/python3 /usr/local/lib/piwatch/piwatchd.py ups-test dry-run \
+  --threshold 4.00 --seconds 30
+```
+
+The dry run prints one sample per second and reports when shutdown would trigger.
+It never requests GPIO2 and never powers off. Choose a threshold at or just above
+the current battery voltage, then unplug mains to exercise the full countdown.
+
+With mains present, test the Pico command pulse and buzzer without shutting down:
+
+```bash
+sudo /usr/bin/python3 /usr/local/lib/piwatch/piwatchd.py ups-test pico \
+  --confirm PULSE-GPIO2
+```
+
+This sends ARM, waits two seconds, and sends DISARM in a `finally` block so an
+interruption during the wait still releases and disarms the Pico.
+
+For the real end-to-end test, unplug mains first and keep the running watchdog
+service active. The daemon rejects the request unless GPIO17 is LOW and the
+INA219 sample is valid:
+
+```bash
+sudo /usr/bin/python3 /usr/local/lib/piwatch/piwatchd.py ups-test shutdown \
+  --confirm POWER-OFF
+```
+
+The running daemon records a clearly labeled test incident, starts every enabled
+notification path, sends the Pico ARM pulse, and requests clean poweroff. Restore
+mains after the Pi halts to test the Pico's GPIO3 wake pulse and retries.
+
 Every three days, each service prunes and compacts its own delivery database. The
 watchdog removes completed and failed jobs older than three days while preserving
 pending jobs, tracker state, and the separately bounded 90-day incident history.

@@ -14,7 +14,9 @@ from .mains import MainsMonitor
 from .notifications.outbox import Outbox
 from .ups_supervisor import (LowBatteryShutdown, NOTIFICATION_START_TIMEOUT_SECONDS,
                              PICO_REGISTER_SECONDS, PicoSupervisor,
-                             SHUTDOWN_VOLTAGE_V, request_poweroff)
+                             SHUTDOWN_VOLTAGE_V, request_poweroff,
+                             take_shutdown_test_request,
+                             valid_battery_voltage, write_shutdown_test_result)
 from .state import StateTracker
 from .status import write_status
 
@@ -22,27 +24,32 @@ log = logging.getLogger('piwatch')
 
 
 async def perform_low_battery_shutdown(trackers, results, outbox, gateways,
-                                       shutdown, pico):
+                                       shutdown, pico, test=False):
     """Queue the final alert, arm the Pico, and request one clean poweroff."""
-    event_tracker = StateTracker('shutdown', 1, 1, 1)
-    event_tracker.display = 'Low battery shutdown'
+    event_name = 'shutdown_test' if test else 'shutdown'
+    event_tracker = StateTracker(event_name, 1, 1, 1)
+    event_tracker.display = ('UPS shutdown test' if test
+                             else 'Low battery shutdown')
     event_tracker.state = 'DOWN'
     event_tracker.down_since = time.time()
-    event_trackers = {**trackers, 'shutdown': event_tracker}
-    event_results = {**results, 'shutdown': {
+    event_trackers = {**trackers, event_name: event_tracker}
+    event_result = {
         'available': True,
         'sampled': True,
         'healthy': False,
         'low': True,
         'voltage_v': shutdown.last_voltage_v,
-        'low_voltage_v': SHUTDOWN_VOLTAGE_V,
         'source': 'shutdown',
-    }}
+        'test': test,
+    }
+    if not test:
+        event_result['low_voltage_v'] = SHUTDOWN_VOLTAGE_V
+    event_results = {**results, event_name: event_result}
 
     shutdown.mark('NOTIFYING')
     try:
         job_ids = outbox.record(
-            event_trackers, [('shutdown', 'DOWN', event_results)], gateways)
+            event_trackers, [(event_name, 'DOWN', event_results)], gateways)
         if not await outbox.wait_started(
                 job_ids, NOTIFICATION_START_TIMEOUT_SECONDS):
             log.warning('Final shutdown notification remains queued on one or more channels')
@@ -84,7 +91,33 @@ async def low_battery_worker(stop, current, outbox, shutdown, pico, hardware_loc
             mains = await asyncio.to_thread(mains_monitor.sample, settings, voltage)
         mains_present = (mains.get('gpio_level')
                          if mains.get('available') is True else None)
-        if shutdown.update(mains_present, battery):
+        try:
+            test_request = take_shutdown_test_request()
+        except (OSError, ValueError) as exc:
+            test_request = None
+            log.error('Rejected malformed UPS test request: %s', type(exc).__name__)
+        if test_request is not None:
+            voltage = valid_battery_voltage(battery)
+            if shutdown.latched:
+                accepted, reason = False, 'shutdown action is already latched'
+            elif mains_present is not False:
+                accepted, reason = False, 'GPIO17 must be LOW before the test'
+            elif voltage is None:
+                accepted, reason = False, 'a valid INA219 reading is required'
+            else:
+                accepted, reason = True, 'accepted by the running daemon'
+            try:
+                write_shutdown_test_result(test_request['id'], accepted, reason)
+            except OSError as exc:
+                accepted = False
+                log.error('Could not acknowledge UPS test request: %s',
+                          type(exc).__name__)
+            if accepted:
+                shutdown.trigger_test(voltage)
+                await perform_low_battery_shutdown(
+                    current['trackers'], current['results'], outbox,
+                    current['config']['gateways'], shutdown, pico, test=True)
+        elif shutdown.update(mains_present, battery):
             await perform_low_battery_shutdown(
                 current['trackers'], current['results'], outbox,
                 current['config']['gateways'], shutdown, pico)

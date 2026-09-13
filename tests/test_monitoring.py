@@ -221,6 +221,77 @@ class PowerSupervisorTests(unittest.TestCase):
         run.assert_called_once_with(
             ups_supervisor.POWEROFF_COMMAND, check=True, timeout=10)
 
+    def test_dry_run_can_use_a_temporary_threshold_without_side_effects(self):
+        now = [0.0]
+        output = []
+
+        def clock():
+            return now[0]
+
+        def sleeper(seconds):
+            now[0] += seconds
+
+        battery = self.battery(3.80)
+        mains = {'available': True, 'gpio_level': False}
+        with patch.object(ups_supervisor, 'live_sample',
+                          return_value=(battery, mains)):
+            passed = ups_supervisor.dry_run(
+                {}, 4.0, qualification_seconds=2, timeout_seconds=5,
+                output=output.append, clock=clock, sleeper=sleeper)
+        self.assertTrue(passed)
+        self.assertIn('DRY RUN PASSED', output[-1])
+        self.assertEqual(ups_supervisor.SHUTDOWN_VOLTAGE_V, 3.05)
+
+    def test_pico_test_arms_then_disarms_and_never_requests_poweroff(self):
+        events = []
+        pico = types.SimpleNamespace(
+            arm=lambda: events.append('arm'), disarm=lambda: events.append('disarm'))
+        battery = self.battery(3.9)
+        mains = {'available': True, 'gpio_level': True}
+        with patch.object(ups_supervisor, 'live_sample',
+                          return_value=(battery, mains)), \
+             patch.object(ups_supervisor, 'PicoSupervisor', return_value=pico), \
+             patch.object(ups_supervisor, 'request_poweroff') as poweroff:
+            ups_supervisor.pico_command_test(
+                {}, output=lambda *_: None,
+                sleeper=lambda seconds: events.append(('wait', seconds)))
+        self.assertEqual(events, ['arm', ('wait', 2.0), 'disarm'])
+        poweroff.assert_not_called()
+
+    def test_pico_test_disarms_even_if_arm_command_is_interrupted(self):
+        events = []
+
+        def interrupted_arm():
+            events.append('arm')
+            raise RuntimeError('interrupted')
+
+        pico = types.SimpleNamespace(
+            arm=interrupted_arm, disarm=lambda: events.append('disarm'))
+        with patch.object(ups_supervisor, 'live_sample', return_value=(
+                self.battery(3.9), {'available': True, 'gpio_level': True})), \
+             patch.object(ups_supervisor, 'PicoSupervisor', return_value=pico):
+            with self.assertRaisesRegex(RuntimeError, 'interrupted'):
+                ups_supervisor.pico_command_test({}, output=lambda *_: None)
+        self.assertEqual(events, ['arm', 'disarm'])
+
+    def test_shutdown_test_request_is_one_shot_and_reports_result(self):
+        with tempfile.TemporaryDirectory() as temp:
+            request_path = Path(temp) / 'request.json'
+            result_path = Path(temp) / 'result.json'
+            request_id = ups_supervisor.create_shutdown_test_request(request_path)
+            self.assertEqual(
+                ups_supervisor.take_shutdown_test_request(request_path),
+                {'id': request_id, 'action': 'shutdown'})
+            self.assertIsNone(
+                ups_supervisor.take_shutdown_test_request(request_path))
+            ups_supervisor.write_shutdown_test_result(
+                request_id, True, 'accepted', result_path)
+            result = ups_supervisor.wait_for_shutdown_test_result(
+                request_id, request_path, result_path)
+            self.assertEqual(result, {
+                'id': request_id, 'accepted': True, 'reason': 'accepted'})
+            self.assertFalse(result_path.exists())
+
 
 class ShutdownActionTests(unittest.IsolatedAsyncioTestCase):
     async def test_final_alert_precedes_arm_and_poweroff(self):
@@ -256,6 +327,80 @@ class ShutdownActionTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(events,
                          ['notify', 'delivery-started', 'arm', 'poweroff'])
         self.assertEqual(shutdown.action_state, 'POWEROFF_REQUESTED')
+
+    async def test_running_daemon_accepts_manual_shutdown_only_with_valid_inputs(self):
+        stop = asyncio.Event()
+        shutdown = LowBatteryShutdown(clock=lambda: 10)
+        current = {
+            'config': {'battery': {}, 'gateways': {}},
+            'trackers': {}, 'results': {},
+        }
+        battery = types.SimpleNamespace(sample=lambda *_: {
+            'available': True, 'sampled': True, 'voltage_v': 3.9})
+        mains = types.SimpleNamespace(sample=lambda *_: {
+            'available': True, 'gpio_level': False})
+        acknowledgements = []
+
+        async def immediate(function, *args):
+            return function(*args)
+
+        async def perform(*args, **kwargs):
+            self.assertTrue(kwargs['test'])
+            stop.set()
+
+        with patch.object(daemon, 'BatteryMonitor', return_value=battery), \
+             patch.object(daemon, 'MainsMonitor', return_value=mains), \
+             patch.object(daemon.asyncio, 'to_thread', side_effect=immediate), \
+             patch.object(daemon, 'take_shutdown_test_request',
+                          return_value={'id': 'a' * 32, 'action': 'shutdown'}), \
+             patch.object(daemon, 'write_shutdown_test_result',
+                          side_effect=lambda *args: acknowledgements.append(args)), \
+             patch.object(daemon, 'perform_low_battery_shutdown',
+                          AsyncMock(side_effect=perform)):
+            await daemon.low_battery_worker(
+                stop, current, object(), shutdown, object(), asyncio.Lock())
+
+        self.assertTrue(shutdown.latched)
+        self.assertEqual(acknowledgements,
+                         [('a' * 32, True, 'accepted by the running daemon')])
+
+    async def test_running_daemon_rejects_manual_shutdown_while_mains_is_present(self):
+        stop = asyncio.Event()
+        shutdown = LowBatteryShutdown(clock=lambda: 10)
+        current = {
+            'config': {'battery': {}, 'gateways': {}},
+            'trackers': {}, 'results': {},
+        }
+        battery = types.SimpleNamespace(sample=lambda *_: {
+            'available': True, 'sampled': True, 'voltage_v': 3.9})
+        mains = types.SimpleNamespace(sample=lambda *_: {
+            'available': True, 'gpio_level': True})
+        acknowledgements = []
+
+        async def immediate(function, *args):
+            return function(*args)
+
+        def acknowledge(*args):
+            acknowledgements.append(args)
+            stop.set()
+
+        with patch.object(daemon, 'BatteryMonitor', return_value=battery), \
+             patch.object(daemon, 'MainsMonitor', return_value=mains), \
+             patch.object(daemon.asyncio, 'to_thread', side_effect=immediate), \
+             patch.object(daemon, 'take_shutdown_test_request',
+                          return_value={'id': 'b' * 32, 'action': 'shutdown'}), \
+             patch.object(daemon, 'write_shutdown_test_result',
+                          side_effect=acknowledge), \
+             patch.object(daemon, 'perform_low_battery_shutdown',
+                          AsyncMock()) as perform:
+            await daemon.low_battery_worker(
+                stop, current, object(), shutdown, object(), asyncio.Lock())
+
+        self.assertFalse(shutdown.latched)
+        self.assertEqual(
+            acknowledgements,
+            [('b' * 32, False, 'GPIO17 must be LOW before the test')])
+        perform.assert_not_awaited()
 
 
 class MainsTests(unittest.TestCase):

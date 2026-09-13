@@ -321,6 +321,7 @@ const Dashboard = {
         const supervisorHealth = upsSupervisorState(supervisor);
         const phase = {
           IDLE: 'Standing by', QUALIFYING: 'Confirming low battery', TRIGGERED: 'Shutdown triggered',
+          TEST_TRIGGERED: 'Operator shutdown test',
           NOTIFYING: 'Sending final alert', ARMING: 'Arming Pico', ARMED: 'Pico armed',
           ARM_FAILED: 'Pico ARM failed', POWEROFF_REQUESTED: 'Poweroff requested',
           POWEROFF_FAILED: 'Poweroff failed'

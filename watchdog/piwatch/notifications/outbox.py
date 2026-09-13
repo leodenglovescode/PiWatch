@@ -173,7 +173,7 @@ class Outbox:
                 severity = "critical" if state == "DOWN" else "recovery"
                 lora_payload = {"messages": [primary, secondary],
                                 "modes": ["alert" if state == "DOWN" else "text", "text"]}
-                if name in ('mains', 'shutdown'):
+                if name in ('mains', 'shutdown', 'shutdown_test'):
                     # A power event fans out independently so one failed gateway
                     # never suppresses or duplicates another successful delivery.
                     payloads = {
@@ -203,7 +203,7 @@ class Outbox:
                         "INSERT INTO jobs (id, channel, payload, created_at, priority) "
                         "VALUES (?, ?, ?, ?, ?)",
                         (incident_id + ":" + channel, channel, json.dumps(payload),
-                         time.time(), 1 if name == 'shutdown' else 0))
+                         time.time(), 1 if name in ('shutdown', 'shutdown_test') else 0))
                     job_ids.append(incident_id + ':' + channel)
         return job_ids
 
