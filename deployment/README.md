@@ -98,7 +98,7 @@ low-power display-off mode, sends the Pico ARM pulse, and requests clean powerof
 Restore mains after the Pi halts to test the Pico's GPIO3 wake pulse and retries.
 
 The OLED also temporarily replaces its rotating pages with `MAINS POWER` and
-`DISCONNECTED` or `RESTORED` for three seconds after each debounced GPIO17 event.
+`DISCONNECT` or `RESTORED` for three seconds after each debounced GPIO17 event.
 During automatic low-battery qualification, its final ten seconds replace the
 rotating pages with the shutdown countdown; this is part of the existing 30-second
 period and adds no delay. On service termination it sends the SSD1306 display-off

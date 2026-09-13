@@ -58,7 +58,7 @@ class PowerOverlay:
             if changed or initial_outage:
                 self.event = {
                     'title': 'MAINS POWER',
-                    'message': 'RESTORED' if mains_state == 'UP' else 'DISCONNECTED',
+                    'message': 'RESTORED' if mains_state == 'UP' else 'DISCONNECT',
                     'voltage_v': self._voltage(mains),
                 }
                 self.event_until = now + EVENT_SECONDS
