@@ -105,6 +105,21 @@ async def low_battery_worker(stop, current, outbox, shutdown, pico, hardware_loc
                 live_sample, settings, battery_monitor, mains_monitor)
         mains_present = (mains.get('gpio_level')
                          if mains.get('available') is True else None)
+        shutdown.observe(mains_present, battery)
+        if (mains_present is True and shutdown.latched
+                and shutdown.action_state in ('POWEROFF_FAILED',
+                                               'RECOVERY_DISARM_FAILED')):
+            try:
+                await asyncio.to_thread(pico.disarm)
+            except Exception as exc:
+                shutdown.mark('RECOVERY_DISARM_FAILED', type(exc).__name__)
+                log.error('Pico DISARM after failed poweroff failed: %s',
+                          type(exc).__name__)
+            else:
+                shutdown.recover_from_failed_poweroff()
+                log.info('Mains restored after failed poweroff; Pico disarmed and '
+                         'shutdown latch cleared')
+            continue
         try:
             test_request = take_shutdown_test_request()
         except (OSError, ValueError) as exc:

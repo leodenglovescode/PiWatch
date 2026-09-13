@@ -65,7 +65,7 @@ class PowerOverlay:
 
         supervisor = status.get('ups_supervisor') or {}
         state = supervisor.get('state')
-        if state == 'POWEROFF_FAILED':
+        if state in ('POWEROFF_FAILED', 'RECOVERY_DISARM_FAILED'):
             self.display_off = False
             return {'title': 'SHUTDOWN', 'message': 'FAILED',
                     'voltage_v': self._voltage(supervisor)}

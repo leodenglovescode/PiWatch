@@ -130,13 +130,18 @@ class LowBatteryShutdown:
             self.low_since = None
             self.action_state = 'IDLE'
 
+    def observe(self, mains_present, battery):
+        """Keep public input state fresh even after the action is latched."""
+        self.mains_present = mains_present if isinstance(mains_present, bool) else None
+        self.last_voltage_v = valid_battery_voltage(battery)
+
     def update(self, mains_present, battery):
         """Return True once after 30 continuous seconds at or below 3.05 V."""
+        self.observe(mains_present, battery)
         if self.latched:
             return False
 
-        self.mains_present = mains_present if isinstance(mains_present, bool) else None
-        voltage = valid_battery_voltage(battery)
+        voltage = self.last_voltage_v
         valid = voltage is not None
         self.last_voltage_v = voltage
 
@@ -156,6 +161,14 @@ class LowBatteryShutdown:
         self.latched = True
         self.action_state = 'TRIGGERED'
         return True
+
+    def recover_from_failed_poweroff(self):
+        """Clear a failed action only after the Pico has been disarmed on mains."""
+        self.latched = False
+        self.low_since = None
+        self.final_countdown_deadline = None
+        self.action_state = 'IDLE'
+        self.error = None
 
     def trigger_test(self, voltage_v):
         if self.latched:

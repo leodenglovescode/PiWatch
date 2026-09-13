@@ -23,7 +23,9 @@ RuntimeDirectoryMode=0755
 EnvironmentFile=/etc/piwatch/secrets.env
 Environment=PYTHONUNBUFFERED=1
 
-NoNewPrivileges=true
+# The piwatch user may elevate only the exact poweroff command allowed by
+# /etc/sudoers.d/piwatch-poweroff. NoNewPrivileges=true would block sudo itself.
+NoNewPrivileges=false
 PrivateTmp=true
 ProtectHome=true
 

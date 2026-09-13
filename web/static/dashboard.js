@@ -325,7 +325,8 @@ const Dashboard = {
           TEST_COUNTDOWN: 'Test shutdown countdown', DISPLAY_OFF: 'Turning display off',
           NOTIFYING: 'Sending final alert', ARMING: 'Arming Pico', ARMED: 'Pico armed',
           ARM_FAILED: 'Pico ARM failed', POWEROFF_REQUESTED: 'Poweroff requested',
-          POWEROFF_FAILED: 'Poweroff failed'
+          POWEROFF_FAILED: 'Poweroff failed',
+          RECOVERY_DISARM_FAILED: 'Recovery DISARM failed'
         }[supervisor.state] || supervisor.state;
         cards.unshift(healthCard('UPS supervisor', supervisorHealth, [
           ['State', phase],

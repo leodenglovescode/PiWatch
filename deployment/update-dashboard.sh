@@ -35,6 +35,7 @@ cleanup() {
             cp -a "$PIWATCH_BACKUP/usr/local/lib/piwatch/piwatchd.py" /usr/local/lib/piwatch/piwatchd.py
         fi
         rm -f /etc/systemd/system/piwatch.service.d/config.conf
+        cp -a "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service" /etc/systemd/system/piwatch.service
         if [[ -f "$PIWATCH_STAGE/installed-config.conf" ]]; then
             mv "$PIWATCH_STAGE/installed-config.conf" /etc/systemd/system/piwatch.service.d/config.conf
         elif [[ -f "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service.d/config.conf" ]]; then
@@ -71,6 +72,7 @@ install -d -m 0700 "$PIWATCH_BACKUP/etc/sudoers.d"
 cp -a /usr/local/lib/piwatch/piwatch "$PIWATCH_BACKUP/usr/local/lib/piwatch/piwatch"
 cp -a /usr/local/lib/piwatch/web "$PIWATCH_BACKUP/usr/local/lib/piwatch/web"
 cp -a /usr/local/lib/piwatch/piwatchd.py "$PIWATCH_BACKUP/usr/local/lib/piwatch/piwatchd.py"
+cp -a /etc/systemd/system/piwatch.service "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service"
 if [[ -f /etc/systemd/system/piwatch.service.d/config.conf ]]; then
     cp -a /etc/systemd/system/piwatch.service.d/config.conf "$PIWATCH_BACKUP/etc/systemd/system/piwatch.service.d/config.conf"
 fi
@@ -105,9 +107,12 @@ shutil.copytree('watchdog/piwatch', stage / 'new-piwatch',
                 ignore=shutil.ignore_patterns('__pycache__'))
 shutil.copytree('web', stage / 'new-web', ignore=shutil.ignore_patterns('__pycache__'))
 shutil.copy2('watchdog/piwatchd.py', stage / 'new-piwatchd.py')
+shutil.copy2('deployment/piwatch.service', stage / 'new-piwatch.service')
 shutil.copy2('deployment/piwatch-config.conf', stage / 'new-config.conf')
 shutil.copy2('deployment/piwatch-poweroff.sudoers', stage / 'new-poweroff-sudoers')
 PY
+
+systemd-analyze verify "$PIWATCH_STAGE/new-piwatch.service"
 
 SERVICES_STOPPED=1
 systemctl stop piwatch
@@ -118,6 +123,7 @@ mv /usr/local/lib/piwatch/web "$PIWATCH_STAGE/installed-web"
 mv "$PIWATCH_STAGE/new-web" /usr/local/lib/piwatch/web
 mv /usr/local/lib/piwatch/piwatchd.py "$PIWATCH_STAGE/installed-piwatchd.py"
 mv "$PIWATCH_STAGE/new-piwatchd.py" /usr/local/lib/piwatch/piwatchd.py
+install -m 0644 "$PIWATCH_STAGE/new-piwatch.service" /etc/systemd/system/piwatch.service
 if [[ -f /etc/systemd/system/piwatch.service.d/config.conf ]]; then
     mv /etc/systemd/system/piwatch.service.d/config.conf "$PIWATCH_STAGE/installed-config.conf"
 fi

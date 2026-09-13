@@ -97,6 +97,15 @@ notification path, presents a ten-second OLED test countdown, puts the SSD1306 i
 low-power display-off mode, sends the Pico ARM pulse, and requests clean poweroff.
 Restore mains after the Pi halts to test the Pico's GPIO3 wake pulse and retries.
 
+The watchdog unit explicitly permits privilege gain because `sudo` cannot run
+under systemd's `NoNewPrivileges=true`. Privilege remains restricted by
+`piwatch-poweroff.sudoers` to the exact noninteractive `systemctl --no-block
+poweroff` command; PiWatch has no other passwordless sudo authorization.
+
+If a poweroff request fails and mains subsequently returns, PiWatch retries the
+Pico DISARM pulse until it succeeds, then clears the failed shutdown latch. It
+does not issue another poweroff merely because the previous request failed.
+
 The OLED also temporarily replaces its rotating pages with `MAINS POWER` and
 `DISCONNECT` or `RESTORED` for three seconds after each debounced GPIO17 event.
 During automatic low-battery qualification, its final ten seconds replace the

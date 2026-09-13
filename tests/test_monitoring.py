@@ -179,6 +179,14 @@ class PowerSupervisorTests(unittest.TestCase):
         now[0] += 0.1
         self.assertTrue(monitor.update(False, self.battery()))
 
+    def test_latched_supervisor_still_observes_restored_mains(self):
+        monitor = LowBatteryShutdown()
+        monitor.latched = True
+        monitor.action_state = 'POWEROFF_FAILED'
+        self.assertFalse(monitor.update(True, self.battery(3.2)))
+        self.assertTrue(monitor.mains_present)
+        self.assertEqual(monitor.last_voltage_v, 3.2)
+
     def test_gpio2_pulses_only_low_and_returns_to_input(self):
         durations = []
         requests = []
@@ -452,6 +460,54 @@ class ShutdownActionTests(unittest.IsolatedAsyncioTestCase):
             acknowledgements,
             [('b' * 32, False, 'GPIO17 must be LOW before the test')])
         perform.assert_not_awaited()
+
+    async def test_mains_restore_disarms_and_clears_failed_poweroff_latch(self):
+        stop = asyncio.Event()
+        shutdown = LowBatteryShutdown()
+        shutdown.latched = True
+        shutdown.action_state = 'POWEROFF_FAILED'
+        shutdown.error = 'CalledProcessError'
+        battery = {'available': True, 'sampled': True, 'voltage_v': 3.2}
+        mains = {'available': True, 'gpio_level': True}
+        calls = []
+
+        def disarm():
+            calls.append('disarm')
+            stop.set()
+
+        async def immediate(function, *args):
+            return function(*args)
+
+        current = {'config': {'battery': {}, 'gateways': {}},
+                   'trackers': {}, 'results': {}}
+        with patch.object(daemon, 'BatteryMonitor'), \
+             patch.object(daemon, 'MainsMonitor'), \
+             patch.object(daemon, 'live_sample', return_value=(battery, mains)), \
+             patch.object(daemon.asyncio, 'to_thread', side_effect=immediate):
+            await daemon.low_battery_worker(
+                stop, current, object(), shutdown,
+                types.SimpleNamespace(disarm=disarm), asyncio.Lock())
+
+        self.assertEqual(calls, ['disarm'])
+        self.assertFalse(shutdown.latched)
+        self.assertEqual(shutdown.action_state, 'IDLE')
+        self.assertTrue(shutdown.mains_present)
+        self.assertIsNone(shutdown.error)
+
+
+class DeploymentSafetyTests(unittest.TestCase):
+    def test_service_sandbox_allows_only_the_sudoers_poweroff(self):
+        unit = (ROOT / 'deployment/piwatch.service').read_text()
+        sudoers = (ROOT / 'deployment/piwatch-poweroff.sudoers').read_text()
+        directives = {line.strip() for line in unit.splitlines()
+                      if line.strip() and not line.lstrip().startswith('#')}
+        self.assertIn('NoNewPrivileges=false', directives)
+        self.assertNotIn('NoNewPrivileges=true', directives)
+        self.assertIn(
+            'piwatch ALL=(root) NOPASSWD: /usr/bin/systemctl --no-block poweroff',
+            sudoers)
+        self.assertEqual(ups_supervisor.POWEROFF_COMMAND, (
+            '/usr/bin/sudo', '-n', '/usr/bin/systemctl', '--no-block', 'poweroff'))
 
 
 class MainsTests(unittest.TestCase):

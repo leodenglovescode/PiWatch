@@ -96,6 +96,7 @@ systemctl stop piwatch
 systemctl stop piwatch-web.service 2>/dev/null || true
 install -d -m 0755 /usr/local/lib/piwatch
 cp -a "$PIWATCH_STAGE/piwatch" "$PIWATCH_STAGE/piwatchd.py" "$PIWATCH_STAGE/web" /usr/local/lib/piwatch/
+install -m 0644 deployment/piwatch.service /etc/systemd/system/piwatch.service
 install -m 0644 deployment/piwatch-web.service /etc/systemd/system/piwatch-web.service
 install -d -m 0755 /etc/systemd/system/piwatch.service.d
 install -m 0644 deployment/piwatch-config.conf /etc/systemd/system/piwatch.service.d/config.conf
