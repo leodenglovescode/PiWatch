@@ -33,7 +33,7 @@ def init_display():
     from luma.core.interface.serial import i2c
     from luma.oled.device import ssd1306
     from luma.core.render import canvas
-    serial = i2c(port=1, address=0x3C)
+    serial = i2c(port=6, address=0x3C)
     device = ssd1306(serial, width=128, height=64)
 
     FONT_PATH = find_font("DejaVu Sans")
