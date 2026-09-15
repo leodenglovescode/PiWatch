@@ -52,6 +52,8 @@ class Handler(BaseHTTPRequestHandler):
                     "destination": radio.DEST,
                     "radio_connected": radio.radio_connected(),
                     "ack_timeout_s": radio.ACK_TIMEOUT,
+                    "status_commands_enabled": radio.status_responder.enabled,
+                    "status_command": radio.status_responder.command,
                 },
             )
             return
@@ -174,10 +176,17 @@ def main():
 
     # Subscribe before opening the radio so early destination ACKs are observed.
     radio.pub.subscribe(radio.on_mesh_receive, "meshtastic.receive")
+    radio.pub.subscribe(radio.on_text_receive, "meshtastic.receive.text")
     threading.Thread(
         target=radio.radio_maintainer,
         daemon=True,
         name="radio-maintainer",
+    ).start()
+    threading.Thread(
+        target=radio.status_responder.run,
+        args=(radio.stopping,),
+        daemon=True,
+        name="status-responder",
     ).start()
 
     def shutdown(*_):
@@ -195,3 +204,4 @@ def main():
         with radio.radio_lock:
             radio.disconnect_radio()
         radio.pub.unsubscribe(radio.on_mesh_receive, "meshtastic.receive")
+        radio.pub.unsubscribe(radio.on_text_receive, "meshtastic.receive.text")

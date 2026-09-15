@@ -8,12 +8,23 @@ import time
 import meshtastic.serial_interface
 from meshtastic.protobuf import mesh_pb2, portnums_pb2
 from pubsub import pub
+from .status_responder import StatusResponder, node_number
 
 
 DEST = os.environ.get("LORA_DEST", "!00000001")
 BIND = os.environ.get("LORA_BIND", "127.0.0.1")
 PORT = int(os.environ.get("LORA_PORT", "8989"))
 ACK_TIMEOUT = float(os.environ.get("LORA_ACK_TIMEOUT", "60"))
+STATUS_ENABLED = os.environ.get("LORA_STATUS_ENABLED", "true").lower() in (
+    "1", "true", "yes", "on",
+)
+STATUS_COMMAND = os.environ.get("LORA_STATUS_COMMAND", "status")
+STATUS_SENDERS = tuple(filter(None, (
+    value.strip()
+    for value in os.environ.get("LORA_STATUS_SENDERS", DEST).split(",")
+)))
+STATUS_COOLDOWN = float(os.environ.get("LORA_STATUS_COOLDOWN", "15"))
+STATUS_PATH = os.environ.get("LORA_STATUS_PATH", "/run/piwatch/status.json")
 
 DEST_NUM = int(DEST[-8:], 16)
 
@@ -27,6 +38,7 @@ pending_lock = threading.Lock()
 early_acks = []
 registering_ack = False
 send_slot = threading.Lock()
+status_responder = None
 
 
 def find_device():
@@ -211,14 +223,38 @@ def on_mesh_receive(packet, interface):
         )
 
 
-def send_packet(r, message, mode, ack):
+def on_text_receive(packet, interface):
+    """Queue an authorized status command without blocking the receive callback."""
+    try:
+        local_num = node_number(interface.localNode.nodeNum)
+        result = (status_responder.enqueue(packet, local_num)
+                  if status_responder else "disabled")
+        if result == "queued":
+            sender = node_number(packet.get("from"))
+            print(
+                f"[status] request queued from !{sender:08x}",
+                flush=True,
+            )
+        elif result in ("rate_limited", "busy"):
+            print(
+                f"[status] request {result.replace('_', ' ')}",
+                flush=True,
+            )
+    except Exception as e:
+        print(
+            f"[status] receive handler error: {type(e).__name__}",
+            flush=True,
+        )
+
+
+def send_packet(r, message, mode, ack, destination=DEST):
     if mode == "alert":
         if ack:
             # sendAlert() itself hardcodes wantAck=False, so reproduce
             # its ALERT_APP/ALERT priority behavior while requesting ACK.
             return r.sendData(
                 message.encode("utf-8"),
-                destinationId=DEST,
+                destinationId=destination,
                 portNum=portnums_pb2.PortNum.ALERT_APP,
                 wantAck=True,
                 priority=mesh_pb2.MeshPacket.Priority.ALERT,
@@ -226,17 +262,17 @@ def send_packet(r, message, mode, ack):
 
         return r.sendAlert(
             message,
-            destinationId=DEST,
+            destinationId=destination,
         )
 
     return r.sendText(
         message,
-        destinationId=DEST,
+        destinationId=destination,
         wantAck=ack,
     )
 
 
-def send_notification(message, mode="text", ack=False):
+def send_notification(message, mode="text", ack=False, destination=DEST):
     """
     Returns (HTTP status, JSON response).
     """
@@ -260,7 +296,7 @@ def send_notification(message, mode="text", ack=False):
                     early_acks.clear()
                     registering_ack = ack
                 try:
-                    packet = send_packet(r, message, mode, ack)
+                    packet = send_packet(r, message, mode, ack, destination)
                 except Exception:
                     with pending_lock:
                         registering_ack = False
@@ -287,7 +323,7 @@ def send_notification(message, mode="text", ack=False):
                     return 200, {
                         "ok": True,
                         "status": "queued",
-                        "destination": DEST,
+                        "destination": destination,
                         "mode": mode,
                         "reliable": False,
                         "packet_id": packet_id,
@@ -297,7 +333,7 @@ def send_notification(message, mode="text", ack=False):
                 state = {
                     "event": threading.Event(),
                     "started": started,
-                    "dest_num": DEST_NUM,
+                    "dest_num": int(str(destination).lstrip("!"), 16),
                     "implicit_ack_ms": None,
                     "result": None,
                 }
@@ -336,7 +372,7 @@ def send_notification(message, mode="text", ack=False):
                     result = {
                         "ok": False,
                         "status": "ack_timeout",
-                        "destination": DEST,
+                        "destination": destination,
                         "mode": mode,
                         "reliable": True,
                         "delivery_confirmed": False,
@@ -368,7 +404,7 @@ def send_notification(message, mode="text", ack=False):
                     response = {
                         "ok": False,
                         "status": "nak",
-                        "destination": DEST,
+                        "destination": destination,
                         "mode": mode,
                         "reliable": True,
                         "delivered": False,
@@ -390,7 +426,7 @@ def send_notification(message, mode="text", ack=False):
                 response = {
                     "ok": True,
                     "status": "delivered",
-                    "destination": DEST,
+                    "destination": destination,
                     "mode": mode,
                     "reliable": True,
                     "delivered": True,
@@ -425,6 +461,35 @@ def send_notification(message, mode="text", ack=False):
             registering_ack = False
             early_acks.clear()
         radio_lock.release()
+
+
+def send_status_reply(message, sender):
+    """Send a lower-priority direct reply without colliding with alert delivery."""
+    destination = f"!{sender:08x}"
+    send_slot.acquire()
+    try:
+        status, result = send_notification(
+            message,
+            mode="text",
+            ack=False,
+            destination=destination,
+        )
+        print(
+            f"[status] reply to {destination}: {result.get('status', status)}",
+            flush=True,
+        )
+    finally:
+        send_slot.release()
+
+
+status_responder = StatusResponder(
+    send_status_reply,
+    STATUS_SENDERS,
+    command=STATUS_COMMAND,
+    cooldown=STATUS_COOLDOWN,
+    status_path=STATUS_PATH,
+    enabled=STATUS_ENABLED,
+)
 
 
 def radio_maintainer():

@@ -47,6 +47,15 @@ budget. Keep the HTTP timeout above the configured ACK budget when changing it.
 USB/SDK transmission itself is synchronous and cannot be forcibly cancelled;
 client timeout does not prove that no transmission occurred.
 
+An authorized portable node can send the exact text `status` to receive a
+compact reply from `/run/piwatch/status.json`. Only a direct message addressed
+to the gateway triggers a reply. Replies are direct, fire-and-forget to avoid
+blocking urgent alerts, and always capped at 200 UTF-8 bytes. By default the
+only authorized sender is `LORA_DEST`. Optional `lora-notifyd` environment
+settings are `LORA_STATUS_ENABLED`, `LORA_STATUS_SENDERS` (comma-separated node
+IDs), `LORA_STATUS_COMMAND`, `LORA_STATUS_COOLDOWN`, and `LORA_STATUS_PATH`.
+Status requests are rate-limited and yield to an alert already using the radio.
+
 Successful request IDs are cached across service restarts for seven days. Reusing
 an ID with a different payload during that window returns 409. Retry of an
 unconfirmed send can duplicate a
