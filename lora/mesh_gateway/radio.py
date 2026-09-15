@@ -26,6 +26,7 @@ STATUS_SENDERS = tuple(filter(None, (
 )))
 STATUS_COOLDOWN = float(os.environ.get("LORA_STATUS_COOLDOWN", "15"))
 STATUS_PATH = os.environ.get("LORA_STATUS_PATH", "/run/piwatch/status.json")
+COMMAND_PAGE_DELAY = float(os.environ.get("LORA_COMMAND_PAGE_DELAY", "3"))
 
 DEST_NUM = int(DEST[-8:], 16)
 
@@ -642,6 +643,7 @@ command_responder = CommandResponder(
     status_path=STATUS_PATH,
     enabled=STATUS_ENABLED,
     radio_provider=radio_command_snapshot,
+    page_delay=COMMAND_PAGE_DELAY,
 )
 
 

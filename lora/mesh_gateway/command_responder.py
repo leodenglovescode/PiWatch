@@ -214,7 +214,7 @@ def build_help_replies(sender, gateway, cooldown=15):
         'HELP 2/3 | incidents [PAGE]: history; incident N: event detail; alerts: '
         'delivery queue; system: Pi metrics; version: boot/config; ping: link test.',
         'HELP 3/3 | radio: LoRa state/config; nodes [PAGE]: heard nodes; node ID: '
-        f'one node. {ids} | Direct messages only; wait {cooldown:g}s between commands.',
+        f'one node. {ids} | DM only; wait {cooldown:g}s. Missed page: help N.',
     )
 
 
@@ -528,6 +528,12 @@ def build_command_replies(command, argument, snapshot, sender, gateway,
                           radio_info=None, now=None, cooldown=15):
     if command == 'help':
         replies = build_help_replies(sender, gateway, cooldown)
+        page = argument.strip()
+        if page:
+            if page in ('1', '2', '3'):
+                replies = (replies[int(page) - 1],)
+            else:
+                replies = ('Usage: help [1|2|3]',)
     elif command == 'ping':
         replies = (f'PONG | GW {node_id(gateway)} | PORTABLE {node_id(sender)} | '
                    f'{_age_text(snapshot, now) if snapshot else "PiWatch unavailable"}',)
@@ -576,7 +582,7 @@ class CommandResponder:
 
     def __init__(self, sender, allowed_senders, command='status', cooldown=15,
                  status_path=DEFAULT_STATUS_PATH, enabled=True, clock=time.monotonic,
-                 radio_provider=None):
+                 radio_provider=None, page_delay=3):
         self.sender = sender
         self.allowed_senders = {number for value in allowed_senders
                                 if (number := node_number(value)) is not None}
@@ -586,6 +592,7 @@ class CommandResponder:
         self.enabled = bool(enabled) and bool(self.allowed_senders)
         self.clock = clock
         self.radio_provider = radio_provider or (lambda: {})
+        self.page_delay = max(0.0, float(page_delay))
         self.requests = queue.Queue(maxsize=16)
         self.last_request = {}
 
@@ -621,10 +628,13 @@ class CommandResponder:
                 snapshot = read_snapshot(self.status_path)
                 radio_info = (self.radio_provider()
                               if command in ('radio', 'nodes', 'node') else None)
-                for message in build_command_replies(
-                        command, argument, snapshot, sender, gateway,
-                        radio_info=radio_info, cooldown=self.cooldown):
+                replies = build_command_replies(
+                    command, argument, snapshot, sender, gateway,
+                    radio_info=radio_info, cooldown=self.cooldown)
+                for index, message in enumerate(replies):
                     self.sender(message, sender)
+                    if index + 1 < len(replies) and stop.wait(self.page_delay):
+                        break
             except Exception as exc:
                 print(f"[command] reply to !{sender:08x} failed: "
                       f"{type(exc).__name__}", flush=True)

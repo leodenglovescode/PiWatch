@@ -47,7 +47,8 @@ budget. Keep the HTTP timeout above the configured ACK budget when changing it.
 USB/SDK transmission itself is synchronous and cannot be forcibly cancelled;
 client timeout does not prove that no transmission occurred.
 
-An authorized portable node can send `help`, `status`, `power`, `problems`,
+An authorized portable node can send `help`, `help 1`, `help 2`, `help 3`,
+`status`, `power`, `problems`,
 `check NAME`, `incidents [PAGE]`, `incident N`, `alerts`, `system`, `radio`,
 `nodes [PAGE]`, `node ID`, `version`, or `ping`. The three-part help reply also
 reports the live gateway and requesting portable node IDs. PiWatch commands
@@ -60,6 +61,10 @@ environment settings remain `LORA_STATUS_ENABLED`, `LORA_STATUS_SENDERS`
 (comma-separated node IDs), `LORA_STATUS_COMMAND` (an alias for `status`),
 `LORA_STATUS_COOLDOWN`, and `LORA_STATUS_PATH`. Requests are rate-limited per
 sender.
+
+Multipart replies wait three seconds between pages by default so the radio can
+finish transmitting each packet. Set `LORA_COMMAND_PAGE_DELAY` to override that
+interval; request a missed help page individually with `help N`.
 
 Successful request IDs are cached across service restarts for seven days. Reusing
 an ID with a different payload during that window returns 409. Retry of an

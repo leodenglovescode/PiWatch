@@ -54,6 +54,7 @@ class Handler(BaseHTTPRequestHandler):
                     "ack_timeout_s": radio.ACK_TIMEOUT,
                     "commands_enabled": radio.command_responder.enabled,
                     "commands": list(radio.COMMANDS),
+                    "command_page_delay_s": radio.command_responder.page_delay,
                     # Retain the original health fields for existing clients.
                     "status_commands_enabled": radio.command_responder.enabled,
                     "status_command": radio.command_responder.command,
