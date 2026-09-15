@@ -47,14 +47,19 @@ budget. Keep the HTTP timeout above the configured ACK budget when changing it.
 USB/SDK transmission itself is synchronous and cannot be forcibly cancelled;
 client timeout does not prove that no transmission occurred.
 
-An authorized portable node can send the exact text `status` to receive a
-compact reply from `/run/piwatch/status.json`. Only a direct message addressed
-to the gateway triggers a reply. Replies are direct, fire-and-forget to avoid
-blocking urgent alerts, and always capped at 200 UTF-8 bytes. By default the
-only authorized sender is `LORA_DEST`. Optional `lora-notifyd` environment
-settings are `LORA_STATUS_ENABLED`, `LORA_STATUS_SENDERS` (comma-separated node
-IDs), `LORA_STATUS_COMMAND`, `LORA_STATUS_COOLDOWN`, and `LORA_STATUS_PATH`.
-Status requests are rate-limited and yield to an alert already using the radio.
+An authorized portable node can send `help`, `status`, `power`, `problems`,
+`check NAME`, `incidents [PAGE]`, `incident N`, `alerts`, `system`, `radio`,
+`nodes [PAGE]`, `node ID`, `version`, or `ping`. The three-part help reply also
+reports the live gateway and requesting portable node IDs. PiWatch commands
+read only the public status snapshot and nonsecret Meshtastic link metadata;
+they never execute shell input or alter monitoring state. Only a direct message
+addressed to the gateway triggers a reply. Replies are direct, fire-and-forget,
+yield between messages to urgent alerts, and are capped at 200 UTF-8 bytes each.
+By default the only authorized sender is `LORA_DEST`. Optional `lora-notifyd`
+environment settings remain `LORA_STATUS_ENABLED`, `LORA_STATUS_SENDERS`
+(comma-separated node IDs), `LORA_STATUS_COMMAND` (an alias for `status`),
+`LORA_STATUS_COOLDOWN`, and `LORA_STATUS_PATH`. Requests are rate-limited per
+sender.
 
 Successful request IDs are cached across service restarts for seven days. Reusing
 an ID with a different payload during that window returns 409. Retry of an

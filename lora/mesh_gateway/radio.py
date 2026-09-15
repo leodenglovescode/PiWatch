@@ -1,14 +1,15 @@
 #!/usr/bin/env python3
 
 import glob
+import math
 import os
 import threading
 import time
 
 import meshtastic.serial_interface
-from meshtastic.protobuf import mesh_pb2, portnums_pb2
+from meshtastic.protobuf import config_pb2, mesh_pb2, portnums_pb2
 from pubsub import pub
-from .status_responder import StatusResponder, node_number
+from .command_responder import COMMANDS, CommandResponder, node_number
 
 
 DEST = os.environ.get("LORA_DEST", "!00000001")
@@ -38,7 +39,156 @@ pending_lock = threading.Lock()
 early_acks = []
 registering_ack = False
 send_slot = threading.Lock()
-status_responder = None
+command_responder = None
+last_rx = {}
+last_rx_lock = threading.Lock()
+
+
+def _enum_name(enum, value):
+    try:
+        return enum.Name(int(value))
+    except (TypeError, ValueError):
+        return None
+
+
+def _packet_value(packet, *names):
+    for name in names:
+        if packet.get(name) is not None:
+            return packet[name]
+    return None
+
+
+def remember_rx(packet):
+    """Retain only nonsecret link metadata from the newest received packet."""
+    if not isinstance(packet, dict):
+        return
+    rssi = _packet_value(packet, 'rxRssi', 'rx_rssi')
+    snr = _packet_value(packet, 'rxSnr', 'rx_snr')
+    via_mqtt = bool(_packet_value(packet, 'viaMqtt', 'via_mqtt'))
+    if rssi is None and snr is None and not via_mqtt:
+        return
+    report = {
+        'from': node_number(packet.get('from')),
+        'rssi': rssi,
+        'snr': snr,
+        'via_mqtt': via_mqtt,
+        'received_at': time.time(),
+    }
+    with last_rx_lock:
+        last_rx.clear()
+        last_rx.update(report)
+
+
+def _channel_name(local_node, preset):
+    try:
+        name = local_node.channels[0].settings.name.strip()
+    except (AttributeError, IndexError, TypeError):
+        name = ''
+    if name:
+        return name
+    return ''.join(part.title() for part in preset.split('_'))
+
+
+def _channel_hash(value):
+    result = 5381
+    for byte in value.encode('utf-8'):
+        result = ((result << 5) + result + byte) & 0xffffffff
+    return result
+
+
+def _center_frequency_mhz(lora_config, local_node, region, preset, bandwidth):
+    """Calculate the current CN frequency without exposing channel credentials."""
+    try:
+        override = float(lora_config.override_frequency)
+        offset = float(lora_config.frequency_offset)
+    except (AttributeError, TypeError, ValueError):
+        return None
+    if override > 0:
+        return override + offset
+    # PiWatch currently operates in CN. Avoid pretending other regional plans are
+    # interchangeable; add their exact firmware ranges if the installation moves.
+    if region != 'CN' or not bandwidth or bandwidth <= 0:
+        return None
+    start, end = 470.0, 510.0
+    step = bandwidth / 1000.0
+    slots = int((end - start) / step)
+    if slots < 1:
+        return None
+    try:
+        slot = int(lora_config.channel_num)
+    except (AttributeError, TypeError, ValueError):
+        slot = 0
+    if slot <= 0:
+        slot = _channel_hash(_channel_name(local_node, preset)) % slots + 1
+    if slot > slots:
+        return None
+    return start + step / 2 + (slot - 1) * step + offset
+
+
+def radio_command_snapshot():
+    """Return bounded live radio/node metadata for read-only LoRa commands."""
+    current = radio
+    connected = radio_connected()
+    result = {'connected': connected, 'nodes': []}
+    if not connected or current is None:
+        return result
+    try:
+        local_node = current.localNode
+        lora_config = local_node.localConfig.lora
+        region = _enum_name(config_pb2.Config.LoRaConfig.RegionCode,
+                            lora_config.region)
+        preset = _enum_name(config_pb2.Config.LoRaConfig.ModemPreset,
+                            lora_config.modem_preset)
+        bandwidth = float(lora_config.bandwidth)
+        spread_factor = float(lora_config.spread_factor)
+        if preset == 'LONG_FAST':
+            bandwidth = bandwidth or 250
+            spread_factor = spread_factor or 11
+        result.update({
+            'gateway': node_number(local_node.nodeNum),
+            'region': region,
+            'preset': preset,
+            'bandwidth_khz': bandwidth or None,
+            'spread_factor': spread_factor or None,
+            'frequency_mhz': _center_frequency_mhz(
+                lora_config, local_node, region, preset or '', bandwidth),
+        })
+    except (AttributeError, TypeError, ValueError):
+        pass
+    with last_rx_lock:
+        result['last_rx'] = dict(last_rx)
+    try:
+        entries = list((current.nodesByNum or {}).items())
+    except (AttributeError, RuntimeError):
+        entries = []
+    now = time.time()
+    for key, value in entries:
+        if not isinstance(value, dict):
+            continue
+        number = node_number(value.get('num')) or node_number(key)
+        if number is None:
+            continue
+        user = value.get('user') or {}
+        last_heard = value.get('lastHeard')
+        age = (max(0, now - last_heard)
+               if isinstance(last_heard, (int, float)) else None)
+        recent = result['last_rx'] if result['last_rx'].get('from') == number else {}
+        result['nodes'].append({
+            'num': number,
+            'long_name': user.get('longName'),
+            'short_name': user.get('shortName'),
+            'age_seconds': age,
+            'snr': (value.get('snr') if value.get('snr') is not None
+                    else recent.get('snr')),
+            'rssi': (value.get('rssi') if value.get('rssi') is not None
+                     else recent.get('rssi')),
+            'hops': value.get('hopsAway'),
+            'via_mqtt': bool(value.get('viaMqtt') or recent.get('via_mqtt')),
+        })
+    result['nodes'].sort(
+        key=lambda item: (item['age_seconds'] is None,
+                          item['age_seconds'] if item['age_seconds'] is not None else math.inf))
+    return result
 
 
 def find_device():
@@ -116,6 +266,7 @@ def on_mesh_receive(packet, interface):
     ACK/NAK packets with reliable notifications currently waiting.
     """
 
+    remember_rx(packet)
     try:
         decoded = packet.get("decoded") or {}
 
@@ -224,25 +375,26 @@ def on_mesh_receive(packet, interface):
 
 
 def on_text_receive(packet, interface):
-    """Queue an authorized status command without blocking the receive callback."""
+    """Queue an authorized read-only command without blocking the callback."""
+    remember_rx(packet)
     try:
         local_num = node_number(interface.localNode.nodeNum)
-        result = (status_responder.enqueue(packet, local_num)
-                  if status_responder else "disabled")
+        result = (command_responder.enqueue(packet, local_num)
+                  if command_responder else "disabled")
         if result == "queued":
             sender = node_number(packet.get("from"))
             print(
-                f"[status] request queued from !{sender:08x}",
+                f"[command] request queued from !{sender:08x}",
                 flush=True,
             )
         elif result in ("rate_limited", "busy"):
             print(
-                f"[status] request {result.replace('_', ' ')}",
+                f"[command] request {result.replace('_', ' ')}",
                 flush=True,
             )
     except Exception as e:
         print(
-            f"[status] receive handler error: {type(e).__name__}",
+            f"[command] receive handler error: {type(e).__name__}",
             flush=True,
         )
 
@@ -463,7 +615,7 @@ def send_notification(message, mode="text", ack=False, destination=DEST):
         radio_lock.release()
 
 
-def send_status_reply(message, sender):
+def send_command_reply(message, sender):
     """Send a lower-priority direct reply without colliding with alert delivery."""
     destination = f"!{sender:08x}"
     send_slot.acquire()
@@ -475,20 +627,21 @@ def send_status_reply(message, sender):
             destination=destination,
         )
         print(
-            f"[status] reply to {destination}: {result.get('status', status)}",
+            f"[command] reply to {destination}: {result.get('status', status)}",
             flush=True,
         )
     finally:
         send_slot.release()
 
 
-status_responder = StatusResponder(
-    send_status_reply,
+command_responder = CommandResponder(
+    send_command_reply,
     STATUS_SENDERS,
     command=STATUS_COMMAND,
     cooldown=STATUS_COOLDOWN,
     status_path=STATUS_PATH,
     enabled=STATUS_ENABLED,
+    radio_provider=radio_command_snapshot,
 )
 
 

@@ -52,8 +52,11 @@ class Handler(BaseHTTPRequestHandler):
                     "destination": radio.DEST,
                     "radio_connected": radio.radio_connected(),
                     "ack_timeout_s": radio.ACK_TIMEOUT,
-                    "status_commands_enabled": radio.status_responder.enabled,
-                    "status_command": radio.status_responder.command,
+                    "commands_enabled": radio.command_responder.enabled,
+                    "commands": list(radio.COMMANDS),
+                    # Retain the original health fields for existing clients.
+                    "status_commands_enabled": radio.command_responder.enabled,
+                    "status_command": radio.command_responder.command,
                 },
             )
             return
@@ -183,10 +186,10 @@ def main():
         name="radio-maintainer",
     ).start()
     threading.Thread(
-        target=radio.status_responder.run,
+        target=radio.command_responder.run,
         args=(radio.stopping,),
         daemon=True,
-        name="status-responder",
+        name="command-responder",
     ).start()
 
     def shutdown(*_):
