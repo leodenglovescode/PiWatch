@@ -80,12 +80,17 @@ probe interval. INA219 voltage changes never alter the mains state.
 The separate `piwatch-ha-mqtt` service reads only `/run/piwatch/status.json` and
 publishes selected measurements through Home Assistant MQTT Discovery. It does not
 open I²C or GPIO. Discovery, metric state, and freshness state are retained at QoS
-1. Metrics publish only while the watchdog snapshot is fresh. Home Assistant uses
+1. Metrics publish once per second, only while the watchdog snapshot is fresh. Home Assistant uses
 the configured expiry, 30 seconds by default, so a short service restart preserves
 the last value without a brief unavailable state. `Data fresh` continues to report
 snapshot freshness while the publisher itself is connected. Broker configuration
 and selected entities reload from the settings database without restarting either
-the monitor or web panel.
+the monitor or web panel. Network receive and transmit rates are converted from the
+system byte counters and published in `Mbit/s` (Mbps). The `Estimated battery` entity converts the measured 1S
+voltage through a nonlinear 3.05–4.20 V curve and clamps the result to 0–100%; it
+is a voltage-based estimate rather than a coulomb-counted state of charge.
+The same estimate appears on the dashboard's UPS battery card, and dashboard network
+rates use Mbps.
 
 Battery events use the normal notification policy. Mains outage and restoration
 events create independent durable Home Assistant, SMTP, and LoRa jobs for every
@@ -93,7 +98,7 @@ enabled gateway, so failure of one path does not suppress the others. The
 `piwatch` service receives I²C and GPIO access through its systemd supplementary groups.
 
 The overview uses the locally vendored Vue 3.5.42 production runtime and render
-functions. It polls the authenticated status endpoint every two seconds and keeps
+functions. It polls the authenticated status endpoint every second and keeps
 a rolling 60-sample trend in memory while the page is open. Vue is served by the
 Pi, so the panel remains available during an Internet or DNS outage. The theme
 control cycles through system, dark, and light modes and stores only that local

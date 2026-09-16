@@ -70,12 +70,10 @@ function healthCard(title, state, rows, accent = '') {
   ]);
 }
 
-function formatBytesPerSecond(value) {
+function formatMegabitsPerSecond(value) {
   if (!Number.isFinite(value)) return '—';
-  if (value < 1024) return `${Math.round(value)} B/s`;
-  if (value < 1024 ** 2) return `${(value / 1024).toFixed(1)} KB/s`;
-  if (value < 1024 ** 3) return `${(value / 1024 ** 2).toFixed(1)} MB/s`;
-  return `${(value / 1024 ** 3).toFixed(1)} GB/s`;
+  const mbps = value * 8 / 1_000_000;
+  return `${mbps < 1 ? mbps.toFixed(3) : mbps.toFixed(2)} Mbps`;
 }
 
 function upsSupervisorState(supervisor) {
@@ -279,9 +277,9 @@ const Dashboard = {
           metricCard('Temperature', Number.isFinite(temperature) ? temperature.toFixed(1) : '—', '°C', temperature >= 80 ? 'Thermal attention required' : 'CPU thermal sensor', history.value.temperature, { percent: temperature / 85 * 100, min: 20, max: 85, tone: temperature >= 80 ? 'metric-alert' : '' })
         ]),
         element('div', 'network-strip', [
-          element('div', 'network-reading', [element('span', 'network-direction', '↓'), element('div', '', [element('span', '', 'Receive'), element('strong', '', formatBytesPerSecond(metrics.network_rx_bps))])]),
+          element('div', 'network-reading', [element('span', 'network-direction', '↓'), element('div', '', [element('span', '', 'Receive'), element('strong', '', formatMegabitsPerSecond(metrics.network_rx_bps))])]),
           element('div', 'network-chart', sparkline(history.value.rx, 0, null)),
-          element('div', 'network-reading', [element('span', 'network-direction', '↑'), element('div', '', [element('span', '', 'Transmit'), element('strong', '', formatBytesPerSecond(metrics.network_tx_bps))])]),
+          element('div', 'network-reading', [element('span', 'network-direction', '↑'), element('div', '', [element('span', '', 'Transmit'), element('strong', '', formatMegabitsPerSecond(metrics.network_tx_bps))])]),
           element('div', 'network-chart', sparkline(history.value.tx, 0, null))
         ])
       ], 'metrics-panel');
@@ -351,6 +349,7 @@ const Dashboard = {
       }
       if (battery) cards.unshift(healthCard('UPS battery', targetState('battery', battery), [
         ['Voltage', Number.isFinite(battery.voltage_v) ? `${battery.voltage_v.toFixed(3)} V` : 'Unavailable'],
+        ['Estimated battery', Number.isFinite(battery.estimated_percentage) ? `${battery.estimated_percentage}%` : 'Unavailable'],
         ['Low alarm', `${battery.low_voltage_v.toFixed(2)} V`],
         ['Recovered', `${battery.recover_voltage_v.toFixed(2)} V`],
         ['Sensor', `I²C ${battery.bus} · ${battery.address}`]
@@ -435,7 +434,7 @@ const Dashboard = {
 
     onMounted(() => {
       refresh();
-      pollTimer = window.setInterval(() => { if (!document.hidden) refresh(); }, 2000);
+      pollTimer = window.setInterval(() => { if (!document.hidden) refresh(); }, 1000);
       clockTimer = window.setInterval(() => { now.value = Date.now(); }, 1000);
       document.addEventListener('visibilitychange', refresh);
     });

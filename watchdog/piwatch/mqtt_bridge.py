@@ -7,6 +7,7 @@ import signal
 import threading
 import time
 
+from .battery import estimated_battery_percentage
 from .config import MQTT_SENSOR_IDS
 from .config_store import SettingsStore
 
@@ -42,13 +43,13 @@ SENSORS = {
         'state_class': 'measurement', 'icon': 'mdi:gauge',
     },
     'network_rx': {
-        'component': 'sensor', 'name': 'Network receive rate', 'key': 'network_rx_bps',
-        'device_class': 'data_rate', 'unit_of_measurement': 'B/s',
+        'component': 'sensor', 'name': 'Network receive rate', 'key': 'network_rx_mbps',
+        'device_class': 'data_rate', 'unit_of_measurement': 'Mbit/s',
         'state_class': 'measurement', 'icon': 'mdi:download-network-outline',
     },
     'network_tx': {
-        'component': 'sensor', 'name': 'Network transmit rate', 'key': 'network_tx_bps',
-        'device_class': 'data_rate', 'unit_of_measurement': 'B/s',
+        'component': 'sensor', 'name': 'Network transmit rate', 'key': 'network_tx_mbps',
+        'device_class': 'data_rate', 'unit_of_measurement': 'Mbit/s',
         'state_class': 'measurement', 'icon': 'mdi:upload-network-outline',
     },
     'uptime': {
@@ -60,6 +61,11 @@ SENSORS = {
         'component': 'sensor', 'name': 'UPS battery voltage', 'key': 'battery_voltage_v',
         'device_class': 'voltage', 'unit_of_measurement': 'V',
         'state_class': 'measurement', 'icon': 'mdi:battery',
+    },
+    'battery_percentage': {
+        'component': 'sensor', 'name': 'Estimated battery', 'key': 'battery_percentage',
+        'device_class': 'battery', 'unit_of_measurement': '%',
+        'state_class': 'measurement', 'icon': 'mdi:battery-medium',
     },
     'mains_power': {
         'component': 'binary_sensor', 'name': 'Mains power', 'key': 'mains_power',
@@ -102,6 +108,11 @@ if set(SENSORS) != set(MQTT_SENSOR_IDS):
 def finite(value):
     return (float(value) if isinstance(value, (int, float)) and
             not isinstance(value, bool) and math.isfinite(value) else None)
+
+
+def megabits_per_second(bytes_per_second):
+    value = finite(bytes_per_second)
+    return round(value * 8 / 1_000_000, 3) if value is not None else None
 
 
 def read_snapshot(path=STATUS_PATH):
@@ -153,10 +164,11 @@ def metric_state(snapshot):
         'memory_usage_percent': finite(metrics.get('memory_percent')),
         'disk_usage_percent': finite(metrics.get('disk_percent')),
         'load_1m': finite(metrics.get('load_1m')),
-        'network_rx_bps': finite(metrics.get('network_rx_bps')),
-        'network_tx_bps': finite(metrics.get('network_tx_bps')),
+        'network_rx_mbps': megabits_per_second(metrics.get('network_rx_bps')),
+        'network_tx_mbps': megabits_per_second(metrics.get('network_tx_bps')),
         'uptime_seconds': finite(metrics.get('uptime_seconds')),
         'battery_voltage_v': battery_voltage,
+        'battery_percentage': estimated_battery_percentage(battery_voltage),
         'mains_power': mains_power,
         'ups_state': str(supervisor.get('state', 'UNKNOWN')).upper(),
         'monitor_state': str((snapshot.get('monitor') or {}).get('state', 'UNKNOWN')).upper(),

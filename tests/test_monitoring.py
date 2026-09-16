@@ -18,7 +18,7 @@ from unittest.mock import AsyncMock, patch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'watchdog'))
 from piwatch import checks, daemon, mqtt_bridge
-from piwatch.battery import BatteryMonitor, read_ina219
+from piwatch.battery import BatteryMonitor, estimated_battery_percentage, read_ina219
 from piwatch.config import validate_config
 from piwatch.config_store import SettingsStore, ConflictError
 from piwatch.mains import MainsMonitor
@@ -109,8 +109,9 @@ class SettingsTests(unittest.TestCase):
     def test_mqtt_defaults_and_expiry_are_validated(self):
         value = validate_config({'targets': []})
         self.assertEqual(value['mqtt']['host'], '127.0.0.1')
-        self.assertEqual(value['mqtt']['publish_interval_seconds'], 5.0)
+        self.assertEqual(value['mqtt']['publish_interval_seconds'], 1.0)
         self.assertEqual(value['mqtt']['expire_after_seconds'], 30)
+        self.assertEqual(value['mqtt']['sensor_schema_version'], 2)
         value['mqtt']['expire_after_seconds'] = 14
         with self.assertRaisesRegex(ValueError, 'integer from 15'):
             validate_config(value)
@@ -118,6 +119,17 @@ class SettingsTests(unittest.TestCase):
         value['mqtt']['topic_prefix'] = 'piwatch/#'
         with self.assertRaisesRegex(ValueError, 'without wildcards'):
             validate_config(value)
+
+    def test_old_mqtt_defaults_migrate_once(self):
+        value = validate_config({'targets': [], 'mqtt': {
+            'sensors': ['cpu_usage'], 'publish_interval_seconds': 5}})
+        self.assertEqual(value['mqtt']['sensors'], ['cpu_usage', 'battery_percentage'])
+        self.assertEqual(value['mqtt']['publish_interval_seconds'], 1.0)
+        value['mqtt']['sensors'].remove('battery_percentage')
+        value['mqtt']['publish_interval_seconds'] = 5
+        migrated = validate_config(value)
+        self.assertNotIn('battery_percentage', migrated['mqtt']['sensors'])
+        self.assertEqual(migrated['mqtt']['publish_interval_seconds'], 5.0)
 
     def test_old_mains_inference_settings_are_removed_during_migration(self):
         value = validate_config({'targets': [], 'battery': {
@@ -214,6 +226,23 @@ class MqttBridgeTests(unittest.TestCase):
         self.assertEqual(payload['state_topic'], 'piwatch/watchdog-pi/state')
         self.assertNotIn('availability_topic', payload)
         self.assertEqual(payload['device']['identifiers'], ['piwatch_watchdog_pi'])
+        battery_topic = ('homeassistant/sensor/piwatch_watchdog_pi/'
+                         'battery_percentage/config')
+        battery = json.loads(messages[battery_topic])
+        self.assertEqual(battery['name'], 'Estimated battery')
+        self.assertEqual(battery['device_class'], 'battery')
+
+    def test_estimated_battery_percentage_is_bounded_and_piecewise(self):
+        self.assertIsNone(estimated_battery_percentage(None))
+        self.assertEqual(estimated_battery_percentage(2.9), 0)
+        self.assertEqual(estimated_battery_percentage(3.8), 60)
+        self.assertEqual(estimated_battery_percentage(4.112), 96)
+        self.assertEqual(estimated_battery_percentage(4.3), 100)
+
+    def test_network_rates_are_converted_to_megabits_per_second(self):
+        state = mqtt_bridge.metric_state(self.snapshot())
+        self.assertEqual(state['network_rx_mbps'], 0.016)
+        self.assertEqual(state['network_tx_mbps'], 0.008)
 
     def test_bridge_publishes_fresh_metrics_and_stops_refreshing_stale_values(self):
         self.FakeMqtt.clients.clear()
@@ -239,6 +268,8 @@ class MqttBridgeTests(unittest.TestCase):
             self.assertEqual(len(state_messages), 1)
             state = json.loads(state_messages[0][1])
             self.assertEqual(state['battery_voltage_v'], 4.112)
+            self.assertEqual(state['battery_percentage'], 96)
+            self.assertEqual(state['network_rx_mbps'], 0.016)
             self.assertEqual(state['mains_power'], 'ON')
             self.assertEqual(state['notifications_failed'], 2)
             self.assertTrue(state_messages[0][3])
@@ -267,6 +298,10 @@ class BatteryTests(unittest.TestCase):
             'voltage_v': next(readings)})
         states = [monitor.sample(self.settings())['healthy'] for _ in range(4)]
         self.assertEqual(states, [True, False, False, True])
+
+    def test_sample_includes_estimated_battery_percentage(self):
+        monitor = BatteryMonitor(reader=lambda *_: {'voltage_v': 3.8})
+        self.assertEqual(monitor.sample(self.settings())['estimated_percentage'], 60)
 
     def test_ina219_bus_voltage_register_is_big_endian(self):
         with patch('piwatch.battery.os.open', return_value=7), \

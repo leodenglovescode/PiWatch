@@ -1,10 +1,33 @@
 """Read INA219 battery voltage and apply the low-voltage hysteresis."""
 import fcntl
+import math
 import os
 import time
 
 I2C_SLAVE = 0x0703
 BUS_VOLTAGE_REGISTER = 0x02
+BATTERY_PERCENTAGE_CURVE = (
+    (3.05, 0), (3.20, 2), (3.30, 5), (3.50, 10), (3.60, 20),
+    (3.70, 40), (3.80, 60), (3.90, 75), (4.00, 85), (4.10, 95),
+    (4.20, 100),
+)
+
+
+def estimated_battery_percentage(voltage):
+    """Estimate 1S Li-ion charge from voltage; clamp and avoid false precision."""
+    if (isinstance(voltage, bool) or not isinstance(voltage, (int, float)) or
+            not math.isfinite(voltage)):
+        return None
+    if voltage <= BATTERY_PERCENTAGE_CURVE[0][0]:
+        return 0
+    if voltage >= BATTERY_PERCENTAGE_CURVE[-1][0]:
+        return 100
+    for (low_v, low_percent), (high_v, high_percent) in zip(
+            BATTERY_PERCENTAGE_CURVE, BATTERY_PERCENTAGE_CURVE[1:]):
+        if voltage <= high_v:
+            fraction = (voltage - low_v) / (high_v - low_v)
+            return round(low_percent + fraction * (high_percent - low_percent))
+    return 100
 
 
 def _read_register(descriptor, register):
@@ -55,4 +78,5 @@ class BatteryMonitor:
             self.low = voltage <= settings['low_voltage_v']
         return {**base, 'available': True, 'sampled': True,
                 'healthy': not self.low, 'low': self.low,
-                'voltage_v': round(voltage, 3)}
+                'voltage_v': round(voltage, 3),
+                'estimated_percentage': estimated_battery_percentage(voltage)}

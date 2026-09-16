@@ -93,6 +93,7 @@ Its default broker is `127.0.0.1:1883`; configure a dedicated broker username
 and password before enabling it when anonymous access is disabled. The password is
 write-only in the panel. TLS uses the Pi's system trust store. MQTT topic prefixes
 cannot contain wildcards. The expiry must be at least three publish intervals.
+The default publish interval is one second, matching the watchdog's metric sampling.
 
 The publisher creates one Home Assistant device with individually selectable CPU,
 memory, disk, network, uptime, battery, mains, UPS, monitor, freshness, and
@@ -102,6 +103,9 @@ updates stop when the source snapshot is stale, and Home Assistant changes them 
 unavailable only after the configured expiry. This preserves values through short
 restarts without hiding a sustained failure. Settings revisions reload live in the
 publisher; no service restart is needed after the first installation.
+Network receive and transmit rates are published in `Mbit/s` (Mbps).
+`Estimated battery` is a clamped 0–100% estimate from the 1S INA219 voltage; charging
+and load sag can move it independently of the pack's true remaining capacity.
 
 The UPS section controls INA219 battery-voltage monitoring and GPIO mains monitoring. Mains
 outage/restoration differs from ordinary service alerts: each event is queued

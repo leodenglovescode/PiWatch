@@ -7,6 +7,7 @@ const mqttSensorDefinitions = {
   cpu_temperature:'CPU temperature', cpu_usage:'CPU usage', memory_usage:'Memory usage',
   disk_usage:'Disk usage', load_1m:'Load average', network_rx:'Network receive rate',
   network_tx:'Network transmit rate', uptime:'System uptime', battery_voltage:'UPS battery voltage',
+  battery_percentage:'Estimated battery',
   mains_power:'Mains power', ups_state:'UPS supervisor state', monitor_state:'Monitor state',
   data_fresh:'Data freshness', snapshot_age:'Snapshot age',
   notifications_pending:'Pending notifications', notifications_failed:'Failed notifications'
@@ -152,7 +153,8 @@ function readConfig() {
     discovery_prefix:form.elements.mqtt_discovery_prefix.value.trim(),
     publish_interval_seconds:Number(form.elements.mqtt_publish_interval.value),
     expire_after_seconds:Number(form.elements.mqtt_expire_after.value),
-    sensors:[...document.querySelectorAll('[data-mqtt-sensor]')].filter(input => input.checked).map(input => input.dataset.mqttSensor)};
+    sensors:[...document.querySelectorAll('[data-mqtt-sensor]')].filter(input => input.checked).map(input => input.dataset.mqttSensor),
+    sensor_schema_version:config.mqtt.sensor_schema_version};
   if (form.elements.mqtt_password.value) value.mqtt.password = form.elements.mqtt_password.value;
   if (form.elements.mqtt_password_clear.checked) value.mqtt.password = '';
   for (const editor of document.querySelectorAll('[data-gateway]')) {

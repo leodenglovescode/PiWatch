@@ -16,15 +16,17 @@ DEFAULT_BATTERY = {'enabled': True, 'bus': 3, 'address': 0x40,
                    'mains_detection_enabled': True, 'mains_debounce_seconds': 3.0}
 MQTT_SENSOR_IDS = (
     'cpu_temperature', 'cpu_usage', 'memory_usage', 'disk_usage', 'load_1m',
-    'network_rx', 'network_tx', 'uptime', 'battery_voltage', 'mains_power',
+    'network_rx', 'network_tx', 'uptime', 'battery_voltage', 'battery_percentage',
+    'mains_power',
     'ups_state', 'monitor_state', 'data_fresh', 'snapshot_age',
     'notifications_pending', 'notifications_failed',
 )
 DEFAULT_MQTT = {
     'enabled': False, 'host': '127.0.0.1', 'port': 1883, 'tls': False,
     'username': '', 'password': '', 'topic_prefix': 'piwatch/watchdog-pi',
-    'discovery_prefix': 'homeassistant', 'publish_interval_seconds': 5.0,
+    'discovery_prefix': 'homeassistant', 'publish_interval_seconds': 1.0,
     'expire_after_seconds': 30, 'sensors': list(MQTT_SENSOR_IDS),
+    'sensor_schema_version': 2,
 }
 LEGACY_MAINS_FIELDS = {'mains_drop_v', 'mains_recover_rise_v', 'mains_window_seconds',
                        'discharge_polarity', 'discharge_shunt_mv'}
@@ -163,7 +165,11 @@ def _validate_config(raw):
     battery['mains_debounce_seconds'] = float(value)
     if not 2 <= battery['mains_debounce_seconds'] <= 3:
         raise ValueError('Mains GPIO debounce must be between 2 and 3 seconds')
-    mqtt = config['mqtt'] = {**DEFAULT_MQTT, **config.get('mqtt', {})}
+    raw_mqtt = config.get('mqtt', {})
+    if not isinstance(raw_mqtt, dict):
+        raise ValueError('MQTT settings must be an object')
+    previous_sensor_schema = raw_mqtt.get('sensor_schema_version', 1)
+    mqtt = config['mqtt'] = {**DEFAULT_MQTT, **raw_mqtt}
     if set(mqtt) - DEFAULT_MQTT.keys():
         raise ValueError('Unknown MQTT setting')
     if not isinstance(mqtt['enabled'], bool) or not isinstance(mqtt['tls'], bool):
@@ -182,16 +188,25 @@ def _validate_config(raw):
             not math.isfinite(interval) or not 1 <= interval <= 300):
         raise ValueError('MQTT publish interval must be between 1 and 300 seconds')
     mqtt['publish_interval_seconds'] = float(interval)
+    if previous_sensor_schema < 2 and mqtt['publish_interval_seconds'] == 5.0:
+        mqtt['publish_interval_seconds'] = 1.0
     expiry = mqtt['expire_after_seconds']
     if (isinstance(expiry, bool) or not isinstance(expiry, int) or
             not 15 <= expiry <= 3600):
         raise ValueError('MQTT expiry must be an integer from 15 to 3600 seconds')
     if expiry < 3 * mqtt['publish_interval_seconds']:
         raise ValueError('MQTT expiry must be at least three publish intervals')
+    if (isinstance(previous_sensor_schema, bool) or
+            not isinstance(previous_sensor_schema, int) or
+            not 1 <= previous_sensor_schema <= DEFAULT_MQTT['sensor_schema_version']):
+        raise ValueError('Unknown MQTT sensor schema version')
     sensors = mqtt['sensors']
     if (not isinstance(sensors, list) or len(sensors) != len(set(sensors)) or
             any(sensor not in MQTT_SENSOR_IDS for sensor in sensors)):
         raise ValueError('MQTT sensors contain an unknown or duplicate entry')
+    if previous_sensor_schema < 2 and 'battery_percentage' not in sensors:
+        sensors.append('battery_percentage')
+    mqtt['sensor_schema_version'] = DEFAULT_MQTT['sensor_schema_version']
     gateways = config.setdefault('gateways', {})
     if not isinstance(gateways, dict) or set(gateways) - GATEWAY_FIELDS.keys():
         raise ValueError('Unknown message gateway')
