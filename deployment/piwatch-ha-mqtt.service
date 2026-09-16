@@ -1,0 +1,31 @@
+[Unit]
+Description=PiWatch Home Assistant MQTT Publisher
+Wants=network-online.target
+After=network-online.target piwatch.service
+
+[Service]
+Type=simple
+User=piwatch-mqtt
+Group=piwatch-mqtt
+SupplementaryGroups=piwatch-config
+WorkingDirectory=/usr/local/lib/piwatch
+ExecStart=/opt/piwatch-mqtt/bin/python /usr/local/lib/piwatch/piwatch-ha-mqtt.py
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/usr/local/lib/piwatch
+RuntimeDirectory=piwatch-ha-mqtt
+RuntimeDirectoryMode=0755
+StateDirectory=piwatch-ha-mqtt
+StateDirectoryMode=0700
+UMask=0027
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+InaccessiblePaths=-/etc/piwatch/secrets.env -/etc/lora-notifyd.env -/var/lib/piwatch -/var/lib/piwatch-web -/var/lib/lora-notifyd
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

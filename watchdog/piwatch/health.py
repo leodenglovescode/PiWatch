@@ -7,7 +7,7 @@ import shutil
 import time
 import urllib.request
 
-UNITS = ('piwatch', 'piwatch-oled', 'lora-notifyd', 'gpsd', 'chrony')
+UNITS = ('piwatch', 'piwatch-ha-mqtt', 'piwatch-oled', 'lora-notifyd', 'gpsd', 'chrony')
 
 
 def boot_id():

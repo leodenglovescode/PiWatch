@@ -4,6 +4,26 @@ For the modular monitor and authenticated panel release, use [WEB_PANEL.md](WEB_
 and `install-local.sh`. The package must be installed with its entry point; the
 single-file copy procedure below describes the earlier reliability deployment.
 
+The panel installer and `update-dashboard.sh` also install
+`piwatch-ha-mqtt.service` with a dedicated Paho virtual environment. The service
+starts disabled at the application level until Home Assistant metrics are enabled
+in the panel. Configure the broker, credentials, topics, timing, and desired
+entities under **Settings → Home Assistant metrics**. Settings reload live.
+
+Verify the publisher without revealing credentials:
+
+```bash
+systemctl status piwatch-ha-mqtt --no-pager
+cat /run/piwatch-ha-mqtt/status.json
+```
+
+`UP` with `connected: true` confirms the broker connection and a completed publish.
+`DISABLED` is expected before the feature is enabled. Home Assistant should create
+one **PiWatch Watchdog Pi** MQTT device. The service publishes retained Discovery,
+state, health, and an informational availability topic under the configured
+prefixes. Entities rely on delayed expiry rather than immediate availability, so
+short reconnects do not flash unavailable.
+
 `watchdog/piwatchd.py` is the source for `/usr/local/lib/piwatch/piwatchd.py`.
 The OLED and LoRa units run scripts directly from this checkout. Unit files here
 reference existing environment files; do not copy or read their secret values.

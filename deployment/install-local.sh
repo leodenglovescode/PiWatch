@@ -27,6 +27,7 @@ from contextlib import closing
 backup, source = map(Path, sys.argv[1:])
 paths = ['/usr/local/lib/piwatch', '/etc/systemd/system/piwatch.service',
          '/etc/systemd/system/piwatch.service.d', '/etc/systemd/system/piwatch-web.service',
+         '/etc/systemd/system/piwatch-ha-mqtt.service',
          '/etc/systemd/system/piwatch-web.service.d', '/etc/piwatch/config.json',
          '/etc/sudoers.d/piwatch-poweroff']
 for raw in paths:
@@ -57,14 +58,20 @@ if originals.exists():
 PY
 getent group piwatch-config >/dev/null || groupadd --system piwatch-config
 id piwatch-web >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/piwatch-web --shell /usr/sbin/nologin piwatch-web
+id piwatch-mqtt >/dev/null 2>&1 || useradd --system --user-group --home-dir /var/lib/piwatch-ha-mqtt --shell /usr/sbin/nologin piwatch-mqtt
 usermod -a -G piwatch-config piwatch
 usermod -a -G piwatch-config piwatch-web
+usermod -a -G piwatch-config piwatch-mqtt
 install -d -o piwatch-web -g piwatch-config -m 2770 /var/lib/piwatch-config
 install -d -o piwatch-web -g piwatch-web -m 0700 /var/lib/piwatch-web
 if [[ ! -x /opt/piwatch-web/bin/python ]]; then
     python3 -m venv /opt/piwatch-web
 fi
 /opt/piwatch-web/bin/python -m pip install -r web/requirements.txt
+if [[ ! -x /opt/piwatch-mqtt/bin/python ]]; then
+    python3 -m venv /opt/piwatch-mqtt
+fi
+/opt/piwatch-mqtt/bin/python -m pip install -r mqtt/requirements.txt
 # Stage code completely, then replace the watchdog package while its process is stopped.
 PIWATCH_STAGE=$(mktemp -d /usr/local/lib/piwatch-stage.XXXXXX)
 trap 'rm -rf -- "$PIWATCH_STAGE"' EXIT
@@ -75,6 +82,7 @@ import sys
 stage = Path(sys.argv[1])
 shutil.copytree('watchdog/piwatch', stage / 'piwatch', ignore=shutil.ignore_patterns('__pycache__'))
 shutil.copy2('watchdog/piwatchd.py', stage / 'piwatchd.py')
+shutil.copy2('watchdog/piwatch-ha-mqtt.py', stage / 'piwatch-ha-mqtt.py')
 shutil.copytree('web', stage / 'web', ignore=shutil.ignore_patterns('__pycache__'))
 PY
 # Initialize only the new settings DB from the existing nonsecret JSON.
@@ -93,20 +101,23 @@ if ! runuser -u piwatch-web -- /opt/piwatch-web/bin/python -c 'from pathlib impo
     runuser -u piwatch-web -- /opt/piwatch-web/bin/python "$PIWATCH_STAGE/web/piwatch-web.py" init
 fi
 systemctl stop piwatch
+systemctl stop piwatch-ha-mqtt.service 2>/dev/null || true
 systemctl stop piwatch-web.service 2>/dev/null || true
 install -d -m 0755 /usr/local/lib/piwatch
-cp -a "$PIWATCH_STAGE/piwatch" "$PIWATCH_STAGE/piwatchd.py" "$PIWATCH_STAGE/web" /usr/local/lib/piwatch/
+cp -a "$PIWATCH_STAGE/piwatch" "$PIWATCH_STAGE/piwatchd.py" "$PIWATCH_STAGE/piwatch-ha-mqtt.py" "$PIWATCH_STAGE/web" /usr/local/lib/piwatch/
 install -m 0644 deployment/piwatch.service /etc/systemd/system/piwatch.service
 install -m 0644 deployment/piwatch-web.service /etc/systemd/system/piwatch-web.service
+install -m 0644 deployment/piwatch-ha-mqtt.service /etc/systemd/system/piwatch-ha-mqtt.service
 install -d -m 0755 /etc/systemd/system/piwatch.service.d
 install -m 0644 deployment/piwatch-config.conf /etc/systemd/system/piwatch.service.d/config.conf
 visudo -cf deployment/piwatch-poweroff.sudoers
 install -o root -g root -m 0440 deployment/piwatch-poweroff.sudoers /etc/sudoers.d/piwatch-poweroff
-systemd-analyze verify /etc/systemd/system/piwatch-web.service /etc/systemd/system/piwatch.service
+systemd-analyze verify /etc/systemd/system/piwatch-web.service /etc/systemd/system/piwatch.service /etc/systemd/system/piwatch-ha-mqtt.service
 systemctl daemon-reload
 systemctl restart lora-notifyd
 systemctl start piwatch
+systemctl enable --now piwatch-ha-mqtt
 systemctl restart piwatch-oled
 systemctl enable --now piwatch-web
-systemctl is-active piwatch lora-notifyd piwatch-oled piwatch-web
+systemctl is-active piwatch piwatch-ha-mqtt lora-notifyd piwatch-oled piwatch-web
 printf 'Installed. Backup: %s\nPanel: http://127.0.0.1:8080 (use an SSH tunnel or a deliberate LAN/VPN binding).\n' "$PIWATCH_BACKUP"

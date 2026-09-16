@@ -29,9 +29,12 @@ sudo bash deployment/install-local.sh
 The installer:
 
 - Parses Python before changing production files.
-- Creates a restricted `piwatch-web` service account and `piwatch-config` group.
+- Creates restricted `piwatch-web` and `piwatch-mqtt` service accounts and the
+  shared `piwatch-config` group.
 - Installs an independent web virtual environment at `/opt/piwatch-web`; existing
   OLED and Meshtastic environments are not modified.
+- Installs the MQTT publisher dependency in its own `/opt/piwatch-mqtt` virtual
+  environment; it does not alter the system Python environment.
 - Initializes the settings DB from the existing nonsecret JSON exactly once.
   No deployment credentials are read or copied. Normal notification delivery
   continues to use inherited service settings until overridden in the panel.
@@ -39,7 +42,7 @@ The installer:
   There is no default login and no unauthenticated registration route.
 - Installs the watchdog package and web code under `/usr/local/lib/piwatch`.
   OLED and radio still run from this checkout using their existing executable paths.
-- Adds a watchdog group-access drop-in and the new web unit, reloads systemd, and
+- Adds a watchdog group-access drop-in plus the web and MQTT units, reloads systemd, and
   restarts only the affected application services in notification-safe order.
 - Grants the watchdog service access to the I²C group so it can read the INA219 on
   bus 3 without `sudo`; the device bus, address, and thresholds remain live settings.
@@ -73,7 +76,8 @@ LAN/VPN use, not direct Internet exposure.
 
 Use Settings to configure service names/addresses, ping/TCP/HTTP probes, enable or
 remove targets, edit intervals/thresholds, Internet endpoints, DNS names, INA219
-battery monitoring, and gateway settings. Saving requires the current password and an enabled second factor. Saves
+battery monitoring, Home Assistant MQTT metrics, and gateway settings. Saving
+requires the current password and an enabled second factor. Saves
 are validated and revision-checked, so a stale browser cannot overwrite newer edits.
 The panel shows when the watchdog reports the saved revision as active.
 
@@ -83,6 +87,21 @@ incidents. Frozen queued jobs keep their previous explicit gateway overrides, so
 editing a gateway cannot redirect an existing alert midway through delivery. An
 unset field uses the watchdog's inherited environment; explicitly clearing a
 credential sets it to empty. Disable a gateway with its Enabled checkbox.
+
+The Home Assistant metrics section controls an independent outbound MQTT publisher.
+Its default broker is `127.0.0.1:1883`; configure a dedicated broker username
+and password before enabling it when anonymous access is disabled. The password is
+write-only in the panel. TLS uses the Pi's system trust store. MQTT topic prefixes
+cannot contain wildcards. The expiry must be at least three publish intervals.
+
+The publisher creates one Home Assistant device with individually selectable CPU,
+memory, disk, network, uptime, battery, mains, UPS, monitor, freshness, and
+notification entities. It reads the atomic public PiWatch snapshot and never opens
+the I²C bus or GPIO. Discovery and state messages use QoS 1 and retain. Metric
+updates stop when the source snapshot is stale, and Home Assistant changes them to
+unavailable only after the configured expiry. This preserves values through short
+restarts without hiding a sustained failure. Settings revisions reload live in the
+publisher; no service restart is needed after the first installation.
 
 The UPS section controls INA219 battery-voltage monitoring and GPIO mains monitoring. Mains
 outage/restoration differs from ordinary service alerts: each event is queued
@@ -155,14 +174,14 @@ sudo -u piwatch-web /opt/piwatch-web/bin/python /usr/local/lib/piwatch/web/piwat
 This requires operating-system access as the service user/root. It changes the
 account password and revokes all sessions, challenges, and second factors. Set up
 MFA again after signing in. Passwords are hashed with scrypt; TOTP secrets and new
-gateway credentials necessarily remain usable by their services and are protected
+gateway or MQTT credentials necessarily remain usable by their services and are protected
 by private filesystem permissions. Backups containing those databases must stay
 private as well.
 
 ## Verify after installation
 
 ```bash
-systemctl is-active piwatch lora-notifyd piwatch-oled piwatch-web gpsd chrony
+systemctl is-active piwatch piwatch-ha-mqtt lora-notifyd piwatch-oled piwatch-web gpsd chrony
 ```
 
 Sign in and check snapshot age, configured targets, the active settings revision,
@@ -171,13 +190,15 @@ revision becomes active without changing process IDs. Check chrony with
 `chronyc tracking` and `chronyc sources -n`. Check LoRa `/health`, including its
 `radio_connected` field. None of these proves destination delivery; ACK success,
 timeout and disconnect tests still require an intended test destination/window.
+The dashboard's Home Assistant MQTT card should report `Disabled` before setup or
+`UP` with a connected broker after MQTT is enabled.
 
 Freshness reports detect stale monitor and health snapshots. They do not add a
 systemd watchdog heartbeat, hardware reboot logic, or automatic remediation.
 
 ## Rollback
 
-Stop `piwatch-web`, then stop `piwatch` so notification work checkpoints before
+Stop `piwatch-web` and `piwatch-ha-mqtt`, then stop `piwatch` so notification work checkpoints before
 changing the radio service. Restore installed watchdog source/units from the
 chosen private backup and remove the newly added `piwatch.service.d/config.conf`
 if it was absent before this installation. For the original single-file radio/OLED

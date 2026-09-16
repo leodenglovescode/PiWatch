@@ -51,8 +51,9 @@ class SettingsStore:
         configured = {}
         for name, fields in SECRET_FIELDS.items():
             configured[name] = {}
+            section = config['mqtt'] if name == 'mqtt' else config['gateways'][name]
             for field in fields:
-                configured[name][field] = bool(config['gateways'][name].pop(field, ''))
+                configured[name][field] = bool(section.pop(field, ''))
         return {'revision': revision, 'config': config, 'configured_secrets': configured}
 
     def save(self, config, expected_revision, actor):
@@ -66,10 +67,13 @@ class SettingsStore:
                 config = copy.deepcopy(config)
                 # Omitted secret fields mean keep; an explicit empty string clears an override.
                 for name, fields in SECRET_FIELDS.items():
-                    gateway = config.setdefault('gateways', {}).setdefault(name, {})
+                    gateway = (config.setdefault('mqtt', {}) if name == 'mqtt' else
+                               config.setdefault('gateways', {}).setdefault(name, {}))
+                    previous_gateway = (previous.get('mqtt', {}) if name == 'mqtt' else
+                                        previous['gateways'][name])
                     for field in fields:
-                        if field not in gateway and field in previous['gateways'][name]:
-                            gateway[field] = previous['gateways'][name][field]
+                        if field not in gateway and field in previous_gateway:
+                            gateway[field] = previous_gateway[field]
                 config = validate_config(config)
                 revision += 1
                 db.execute('UPDATE settings SET revision=?, value=?, updated_at=? WHERE id=1',

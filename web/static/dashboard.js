@@ -311,12 +311,24 @@ const Dashboard = {
       const satellites = Number.isFinite(gps.seen) && Number.isFinite(gps.used)
         ? `${gps.used} used / ${gps.seen} seen` : 'Awaiting complete SKY report';
       const serviceValues = Object.entries(health.services?.units || {});
+      const mqtt = snapshot.value?.mqtt_bridge;
       const cards = [
         healthCard('GPS receiver', healthState(gps), [['Fix', gpsFix], ['Satellites', satellites], ['Sample', gps.report_at ? `${PW.age(Date.now() / 1000 - gps.report_at)} ago` : '—']], 'health-gps'),
         healthCard('Time synchronization', healthState(health.time), [['Source', health.time?.source], ['Stratum', health.time?.stratum], ['Leap status', health.time?.leap_status]], 'health-time'),
         healthCard('LoRa gateway', healthState(health.radio), [['USB radio', health.radio?.radio_connected ? 'Connected' : 'Disconnected'], ['Delivery proof', 'Destination ACK'], ['Health sample', health.radio?.checked_at ? `${PW.age(Date.now() / 1000 - health.radio.checked_at)} ago` : '—']], 'health-radio'),
         healthCard('Application services', healthState(health.services), serviceValues.length ? serviceValues.map(([name, state]) => [name, state]) : [['Status', 'No sample']], 'health-services')
       ];
+      if (mqtt) {
+        const mqttState = mqtt.state === 'UP' && mqtt.connected ? 'UP'
+          : mqtt.state === 'DISABLED' ? 'UNKNOWN' : mqtt.state === 'CONNECTING' ? 'SUSPECT' : 'DOWN';
+        cards.splice(3, 0, healthCard('Home Assistant MQTT', mqttState, [
+          ['Publisher', mqtt.state === 'DISABLED' ? 'Disabled' : mqtt.state],
+          ['Broker connection', mqtt.connected ? 'Connected' : 'Not connected'],
+          ['Last publish', mqtt.last_publish_at ? `${PW.age(Date.now() / 1000 - mqtt.last_publish_at)} ago` : '—'],
+          ['Source snapshot', Number.isFinite(mqtt.snapshot_age_seconds) ? `${PW.age(mqtt.snapshot_age_seconds)} old` : '—'],
+          ['Error', mqtt.error || 'None']
+        ], 'health-mqtt'));
+      }
       if (supervisor?.state) {
         const supervisorHealth = upsSupervisorState(supervisor);
         const phase = {

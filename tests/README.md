@@ -13,7 +13,8 @@ Existing Meshtastic environment, hardware-mocked radio/outbox regressions:
 .venvs/meshtastic/bin/python -m unittest discover -s tests -p test_reliability.py -v
 ```
 
-Monitoring/configuration/history tests use only the standard library:
+Monitoring/configuration/history/MQTT mapping tests use only the standard library
+and a fake MQTT client:
 
 ```bash
 python3 -m unittest discover -s tests -p test_monitoring.py -v
@@ -40,6 +41,10 @@ config reload without restart, target reconciliation, external probe sampling,
 password/CSRF/session protection, TOTP replay rejection, verified email challenges,
 recovery-code single use and stale status detection. They do not open hardware,
 read deployment secret files, or send notifications.
+
+The production MQTT service uses the pinned Paho version in `mqtt/requirements.txt`.
+The deployment scripts install it in `/opt/piwatch-mqtt`; tests do not modify that
+environment or connect to a broker.
 
 The power-supervisor regressions use fake GPIO requests, a synthetic monotonic
 clock, and a mocked `systemctl` subprocess. They never pulse a real GPIO or request

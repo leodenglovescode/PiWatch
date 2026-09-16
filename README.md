@@ -8,6 +8,7 @@ panel. Source and backups stay on the Pi; this repository is never published.
 | Area | Entry point | Supporting code |
 |---|---|---|
 | Monitoring | `watchdog/piwatchd.py` | `watchdog/piwatch/`: checks, battery sensor, state, configuration, health, status |
+| HA metrics | `watchdog/piwatch-ha-mqtt.py` | `watchdog/piwatch/mqtt_bridge.py`: MQTT Discovery and retained sensor state |
 | Notifications | Part of the monitoring service | `watchdog/piwatch/notifications/`: message formatting, outbox, HA, SMTP, LoRa client |
 | Radio gateway | `lora/lora-notifyd.py` | `lora/mesh_gateway/`: radio/ACK handling, delivery cache, HTTP API |
 | OLED | `oled/piwatch-oled.py` | Metrics, gpsd reader, watchdog page |
@@ -24,7 +25,7 @@ does not initialize devices or start threads.
   delivery counts and outstanding jobs, and recent incidents.
 - Settings: add/edit/remove/disable monitored services; ping, TCP, and HTTP checks;
   Internet endpoints; DNS names; UPS sensor and voltage thresholds; intervals/thresholds;
-  LoRa, SMTP, and HA gateways.
+  Home Assistant MQTT metrics; LoRa, SMTP, and HA notification gateways.
 - Account: username/password, session timeout, authenticator-app and email 2FA,
   single-use recovery codes. Email setup is disabled until SMTP is explicitly
   configured in the panel and requires verification of the recipient.
@@ -38,8 +39,9 @@ retain their gateway overrides, message text, and delivery checkpoints.
 
 - `/var/lib/piwatch-config/settings.sqlite3`: current validated settings and a
   bounded revision audit (no old setting values). Owned by `piwatch-web`, readable
-  by the monitor through the `piwatch-config` group. Explicit gateway credentials
-  are stored here with restricted filesystem permissions and never returned by
+  by the monitor and MQTT publisher through the `piwatch-config` group. Explicit
+  gateway and MQTT credentials are stored here with restricted filesystem
+  permissions and never returned by
   the settings API. Blank credential inputs preserve the current value; the
   explicit clear checkbox stores an empty credential.
 - `/var/lib/piwatch-web/auth.sqlite3`: password hashes, revocable sessions,
@@ -53,6 +55,8 @@ retain their gateway overrides, message text, and delivery checkpoints.
 - `/run/piwatch/status.json`: replaceable public status snapshot with no gateway
   credentials or message bodies. Includes the newest 100 incidents and 50
   outstanding jobs so the panel needs no outbox access.
+- `/run/piwatch-ha-mqtt/status.json`: nonsecret MQTT publisher state, connection
+  status, last publish time, and source snapshot age.
 
 History is capped at 10,000 events; records older than 90 days are pruned when new
 incidents are recorded. Completed/failed delivery records are retained separately.
@@ -72,6 +76,16 @@ from voltage sag. Mains presence comes only from the active-high GPIO17 input on
 physical pin 11. A change must remain stable for three seconds before it is accepted;
 the GPIO is sampled once per control cycle, independently of the configurable service
 probe interval. INA219 voltage changes never alter the mains state.
+
+The separate `piwatch-ha-mqtt` service reads only `/run/piwatch/status.json` and
+publishes selected measurements through Home Assistant MQTT Discovery. It does not
+open I²C or GPIO. Discovery, metric state, and freshness state are retained at QoS
+1. Metrics publish only while the watchdog snapshot is fresh. Home Assistant uses
+the configured expiry, 30 seconds by default, so a short service restart preserves
+the last value without a brief unavailable state. `Data fresh` continues to report
+snapshot freshness while the publisher itself is connected. Broker configuration
+and selected entities reload from the settings database without restarting either
+the monitor or web panel.
 
 Battery events use the normal notification policy. Mains outage and restoration
 events create independent durable Home Assistant, SMTP, and LoRa jobs for every

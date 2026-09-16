@@ -3,6 +3,14 @@ const form = document.getElementById('settings-form');
 let config, revision;
 const numeric = ['interval_seconds','external_interval_seconds','health_interval_seconds','suspect_after_failures','down_after_failures','recover_after_successes'];
 const targetEditors = document.getElementById('target-editors');
+const mqttSensorDefinitions = {
+  cpu_temperature:'CPU temperature', cpu_usage:'CPU usage', memory_usage:'Memory usage',
+  disk_usage:'Disk usage', load_1m:'Load average', network_rx:'Network receive rate',
+  network_tx:'Network transmit rate', uptime:'System uptime', battery_voltage:'UPS battery voltage',
+  mains_power:'Mains power', ups_state:'UPS supervisor state', monitor_state:'Monitor state',
+  data_fresh:'Data freshness', snapshot_age:'Snapshot age',
+  notifications_pending:'Pending notifications', notifications_failed:'Failed notifications'
+};
 function syncBatteryFields() {
   const batteryEnabled = form.elements.battery_enabled.checked;
   const mainsEnabled = form.elements.mains_detection_enabled.checked;
@@ -65,6 +73,14 @@ function gatewayEditors(secretsConfigured) {
     editor.append(fields); container.append(editor);
   }
 }
+function mqttSensorEditors(enabledSensors) {
+  const container = document.getElementById('mqtt-sensors'); container.replaceChildren();
+  for (const [id, title] of Object.entries(mqttSensorDefinitions)) {
+    const label = PW.node('label', undefined, 'check');
+    const input = PW.node('input'); input.type = 'checkbox'; input.dataset.mqttSensor = id;
+    input.checked = enabledSensors.includes(id); label.append(input, title); container.append(label);
+  }
+}
 async function load() {
   const data = await PW.request('/api/settings'); config = data.config; revision = data.revision;
   document.getElementById('revision').textContent = `Saved revision ${revision}`;
@@ -82,6 +98,19 @@ async function load() {
   syncBatteryFields();
   form.elements.internet_targets.value = config.internet.targets.map(t => `${t.host}:${t.port}`).join('\n');
   form.elements.dns_names.value = config.dns.names.join('\n');
+  form.elements.mqtt_enabled.checked = config.mqtt.enabled;
+  form.elements.mqtt_host.value = config.mqtt.host;
+  form.elements.mqtt_port.value = config.mqtt.port;
+  form.elements.mqtt_tls.checked = config.mqtt.tls;
+  form.elements.mqtt_username.value = config.mqtt.username;
+  form.elements.mqtt_password.value = '';
+  form.elements.mqtt_password.placeholder = data.configured_secrets.mqtt?.password ? 'Stored — leave blank to keep' : 'Optional';
+  form.elements.mqtt_password_clear.checked = false;
+  form.elements.mqtt_topic_prefix.value = config.mqtt.topic_prefix;
+  form.elements.mqtt_discovery_prefix.value = config.mqtt.discovery_prefix;
+  form.elements.mqtt_publish_interval.value = config.mqtt.publish_interval_seconds;
+  form.elements.mqtt_expire_after.value = config.mqtt.expire_after_seconds;
+  mqttSensorEditors(config.mqtt.sensors);
   gatewayEditors(data.configured_secrets);
   document.getElementById('save-settings').disabled = false;
   document.getElementById('save-status').textContent = 'Changes are validated before they are applied.';
@@ -116,6 +145,16 @@ function readConfig() {
     recover_voltage_v:Number(form.elements.battery_recover_voltage.value),
     mains_detection_enabled:form.elements.mains_detection_enabled.checked,
     mains_debounce_seconds:Number(form.elements.mains_debounce_seconds.value)};
+  value.mqtt = {enabled:form.elements.mqtt_enabled.checked,
+    host:form.elements.mqtt_host.value.trim(), port:Number(form.elements.mqtt_port.value),
+    tls:form.elements.mqtt_tls.checked, username:form.elements.mqtt_username.value,
+    topic_prefix:form.elements.mqtt_topic_prefix.value.trim(),
+    discovery_prefix:form.elements.mqtt_discovery_prefix.value.trim(),
+    publish_interval_seconds:Number(form.elements.mqtt_publish_interval.value),
+    expire_after_seconds:Number(form.elements.mqtt_expire_after.value),
+    sensors:[...document.querySelectorAll('[data-mqtt-sensor]')].filter(input => input.checked).map(input => input.dataset.mqttSensor)};
+  if (form.elements.mqtt_password.value) value.mqtt.password = form.elements.mqtt_password.value;
+  if (form.elements.mqtt_password_clear.checked) value.mqtt.password = '';
   for (const editor of document.querySelectorAll('[data-gateway]')) {
     const gateway = value.gateways[editor.dataset.gateway];
     for (const input of editor.querySelectorAll('[data-field]')) {

@@ -89,6 +89,8 @@ class WebTests(unittest.TestCase):
         self.assertIn('name="battery_low_voltage"', settings)
         self.assertIn('name="mains_detection_enabled"', settings)
         self.assertIn('name="mains_debounce_seconds"', settings)
+        self.assertIn('name="mqtt_enabled"', settings)
+        self.assertIn('id="mqtt-sensors"', settings)
         self.assertIn('GPIO17 · physical pin 11', settings)
         self.assertIn('id="clear-deliveries"', settings)
         self.assertIn('id="clear-incidents"', settings)
@@ -97,10 +99,12 @@ class WebTests(unittest.TestCase):
         self.login()
         value = self.client.get('/api/settings').json
         value['config']['gateways']['lora']['token'] = 'synthetic-sensitive-token'
+        value['config']['mqtt']['password'] = 'synthetic-mqtt-password'
         self.assertEqual(self.post('/api/settings', value, 'PUT').status_code, 403)
         value['current_password'] = PASSWORD
         self.assertEqual(self.post('/api/settings', value, 'PUT').status_code, 200)
         self.assertNotIn('synthetic-sensitive-token', self.client.get('/api/settings').text)
+        self.assertNotIn('synthetic-mqtt-password', self.client.get('/api/settings').text)
         self.assertEqual(self.post('/api/settings', value, 'PUT').status_code, 409)
 
     def test_maintenance_clear_requires_reauthentication_and_is_trackable(self):
@@ -189,17 +193,28 @@ class WebTests(unittest.TestCase):
 
     def test_status_fails_closed_when_old_missing_or_previous_boot(self):
         path = self.root / 'status.json'
-        self.assertFalse(read_status(path)['fresh'])
+        mqtt_path = self.root / 'mqtt.json'
+        self.assertFalse(read_status(path, mqtt_path)['fresh'])
         data = {'schema_version':2,'boot_id':boot_id(),'generated_at':time.time(),'generated_monotonic':time.monotonic(),
                 'stale_after_seconds':10,'health_stale_after_seconds':45,'self_health':{'checked_monotonic':time.monotonic()}}
         path.write_text(json.dumps(data))
-        self.assertTrue(read_status(path)['fresh'])
+        self.assertTrue(read_status(path, mqtt_path)['fresh'])
+        mqtt_path.write_text(json.dumps({
+            'state':'UP', 'connected':True, 'generated_at':time.time(),
+            'last_publish_at':time.time(), 'snapshot_age_seconds':1,
+            'settings_revision':2, 'error':None}))
+        self.assertEqual(read_status(path, mqtt_path)['mqtt_bridge']['state'], 'UP')
+        mqtt_path.write_text(json.dumps({
+            'state':'UP', 'connected':True, 'generated_at':time.time() - 20,
+            'last_publish_at':time.time() - 20, 'snapshot_age_seconds':20,
+            'settings_revision':2, 'error':None}))
+        self.assertEqual(read_status(path, mqtt_path)['mqtt_bridge']['state'], 'STALE')
         data['generated_monotonic'] -= 30
         path.write_text(json.dumps(data))
-        self.assertFalse(read_status(path)['fresh'])
+        self.assertFalse(read_status(path, mqtt_path)['fresh'])
         data['boot_id'] = 'a-previous-boot'
         path.write_text(json.dumps(data))
-        self.assertFalse(read_status(path)['fresh'])
+        self.assertFalse(read_status(path, mqtt_path)['fresh'])
 
     def test_email_login_is_bound_to_pending_password_session(self):
         self.configure_smtp()

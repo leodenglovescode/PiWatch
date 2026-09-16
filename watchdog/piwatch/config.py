@@ -14,9 +14,22 @@ DEFAULT_DNS = {'enabled': True, 'names': ['example.com', 'www.baidu.com']}
 DEFAULT_BATTERY = {'enabled': True, 'bus': 3, 'address': 0x40,
                    'low_voltage_v': 3.30, 'recover_voltage_v': 3.50,
                    'mains_detection_enabled': True, 'mains_debounce_seconds': 3.0}
+MQTT_SENSOR_IDS = (
+    'cpu_temperature', 'cpu_usage', 'memory_usage', 'disk_usage', 'load_1m',
+    'network_rx', 'network_tx', 'uptime', 'battery_voltage', 'mains_power',
+    'ups_state', 'monitor_state', 'data_fresh', 'snapshot_age',
+    'notifications_pending', 'notifications_failed',
+)
+DEFAULT_MQTT = {
+    'enabled': False, 'host': '127.0.0.1', 'port': 1883, 'tls': False,
+    'username': '', 'password': '', 'topic_prefix': 'piwatch/watchdog-pi',
+    'discovery_prefix': 'homeassistant', 'publish_interval_seconds': 5.0,
+    'expire_after_seconds': 30, 'sensors': list(MQTT_SENSOR_IDS),
+}
 LEGACY_MAINS_FIELDS = {'mains_drop_v', 'mains_recover_rise_v', 'mains_window_seconds',
                        'discharge_polarity', 'discharge_shunt_mv'}
-SECRET_FIELDS = {'lora': ('token',), 'smtp': ('password',), 'home_assistant': ('webhook_id',)}
+SECRET_FIELDS = {'lora': ('token',), 'smtp': ('password',),
+                 'home_assistant': ('webhook_id',), 'mqtt': ('password',)}
 GATEWAY_FIELDS = {
     'lora': {'enabled', 'url', 'token'},
     'smtp': {'enabled', 'host', 'port', 'security', 'username', 'password', 'sender', 'recipient'},
@@ -38,6 +51,14 @@ def host(value):
 def port(value):
     if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 65535:
         raise ValueError('Port must be between 1 and 65535')
+    return value
+
+
+def mqtt_topic(value, label):
+    if (not isinstance(value, str) or not value or len(value) > 200 or
+            value != value.strip('/') or '\x00' in value or '+' in value or '#' in value or
+            any(ord(char) < 32 for char in value)):
+        raise ValueError(f'{label} must be a valid MQTT topic prefix without wildcards')
     return value
 
 
@@ -142,6 +163,35 @@ def _validate_config(raw):
     battery['mains_debounce_seconds'] = float(value)
     if not 2 <= battery['mains_debounce_seconds'] <= 3:
         raise ValueError('Mains GPIO debounce must be between 2 and 3 seconds')
+    mqtt = config['mqtt'] = {**DEFAULT_MQTT, **config.get('mqtt', {})}
+    if set(mqtt) - DEFAULT_MQTT.keys():
+        raise ValueError('Unknown MQTT setting')
+    if not isinstance(mqtt['enabled'], bool) or not isinstance(mqtt['tls'], bool):
+        raise ValueError('MQTT enabled and TLS settings must be booleans')
+    host(mqtt['host'])
+    port(mqtt['port'])
+    for key in ('username', 'password'):
+        value = mqtt[key]
+        if (not isinstance(value, str) or len(value) > 4096 or '\n' in value or
+                '\r' in value or '\x00' in value):
+            raise ValueError(f'Invalid MQTT {key}')
+    mqtt_topic(mqtt['topic_prefix'], 'MQTT topic prefix')
+    mqtt_topic(mqtt['discovery_prefix'], 'MQTT discovery prefix')
+    interval = mqtt['publish_interval_seconds']
+    if (isinstance(interval, bool) or not isinstance(interval, (int, float)) or
+            not math.isfinite(interval) or not 1 <= interval <= 300):
+        raise ValueError('MQTT publish interval must be between 1 and 300 seconds')
+    mqtt['publish_interval_seconds'] = float(interval)
+    expiry = mqtt['expire_after_seconds']
+    if (isinstance(expiry, bool) or not isinstance(expiry, int) or
+            not 15 <= expiry <= 3600):
+        raise ValueError('MQTT expiry must be an integer from 15 to 3600 seconds')
+    if expiry < 3 * mqtt['publish_interval_seconds']:
+        raise ValueError('MQTT expiry must be at least three publish intervals')
+    sensors = mqtt['sensors']
+    if (not isinstance(sensors, list) or len(sensors) != len(set(sensors)) or
+            any(sensor not in MQTT_SENSOR_IDS for sensor in sensors)):
+        raise ValueError('MQTT sensors contain an unknown or duplicate entry')
     gateways = config.setdefault('gateways', {})
     if not isinstance(gateways, dict) or set(gateways) - GATEWAY_FIELDS.keys():
         raise ValueError('Unknown message gateway')
@@ -168,7 +218,7 @@ def _validate_config(raw):
             port(gateway['port'])
         if 'security' in gateway and gateway['security'] not in ('ssl', 'starttls'):
             raise ValueError('SMTP requires SSL or STARTTLS')
-    return {key: config[key] for key in ('targets', 'internet', 'dns', 'battery', 'gateways', 'interval_seconds',
+    return {key: config[key] for key in ('targets', 'internet', 'dns', 'battery', 'mqtt', 'gateways', 'interval_seconds',
             'external_interval_seconds', 'health_interval_seconds', 'suspect_after_failures',
             'down_after_failures', 'recover_after_successes')}
 

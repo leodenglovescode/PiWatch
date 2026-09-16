@@ -27,7 +27,8 @@ def smtp_ready(config):
                 and (not smtp.get('username') or smtp.get('password')))
 
 
-def create_app(state_dir=None, settings_path=None, status_path=None, secure_cookie=None):
+def create_app(state_dir=None, settings_path=None, status_path=None, secure_cookie=None,
+               mqtt_status_path=None):
     state_dir = Path(state_dir or os.environ.get('PIWATCH_WEB_STATE', '/var/lib/piwatch-web'))
     state_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
     key_path = state_dir / 'session.key'
@@ -46,6 +47,8 @@ def create_app(state_dir=None, settings_path=None, status_path=None, secure_cook
     auth = AuthStore(state_dir / 'auth.sqlite3')
     settings = SettingsStore(settings_path or SETTINGS_PATH)
     status_path = status_path or os.environ.get('PIWATCH_STATUS_PATH', '/run/piwatch/status.json')
+    mqtt_status_path = mqtt_status_path or os.environ.get(
+        'PIWATCH_MQTT_STATUS_PATH', '/run/piwatch-ha-mqtt/status.json')
     app.extensions.update(auth_store=auth, settings_store=settings)
 
     def establish_session():
@@ -204,7 +207,7 @@ def create_app(state_dir=None, settings_path=None, status_path=None, secure_cook
 
     @app.get('/api/status')
     def status():
-        return jsonify(read_status(status_path))
+        return jsonify(read_status(status_path, mqtt_status_path))
 
     @app.get('/api/settings')
     def get_settings():

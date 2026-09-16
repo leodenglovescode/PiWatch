@@ -17,7 +17,7 @@ from unittest.mock import AsyncMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'watchdog'))
-from piwatch import checks, daemon
+from piwatch import checks, daemon, mqtt_bridge
 from piwatch.battery import BatteryMonitor, read_ina219
 from piwatch.config import validate_config
 from piwatch.config_store import SettingsStore, ConflictError
@@ -59,6 +59,18 @@ class SettingsTests(unittest.TestCase):
         self.store.save(public['config'], public['revision'], 'owner')
         self.assertEqual(self.store.read()[1]['gateways']['smtp']['password'], '')
 
+    def test_mqtt_password_is_write_only_and_preserved_when_omitted(self):
+        revision, value = self.store.read()
+        value['mqtt']['password'] = 'synthetic-mqtt-password'
+        self.store.save(value, revision, 'owner')
+        public = self.store.public()
+        self.assertTrue(public['configured_secrets']['mqtt']['password'])
+        self.assertNotIn('synthetic-mqtt-password', json.dumps(public))
+        public['config']['mqtt']['enabled'] = True
+        self.store.save(public['config'], public['revision'], 'owner')
+        self.assertEqual(self.store.read()[1]['mqtt']['password'],
+                         'synthetic-mqtt-password')
+
     def test_revision_conflicts_do_not_overwrite_newer_changes(self):
         revision, value = self.store.read()
         self.store.save(value, revision, 'first')
@@ -94,6 +106,19 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, 'between 2 and 3 seconds'):
             validate_config(value)
 
+    def test_mqtt_defaults_and_expiry_are_validated(self):
+        value = validate_config({'targets': []})
+        self.assertEqual(value['mqtt']['host'], '127.0.0.1')
+        self.assertEqual(value['mqtt']['publish_interval_seconds'], 5.0)
+        self.assertEqual(value['mqtt']['expire_after_seconds'], 30)
+        value['mqtt']['expire_after_seconds'] = 14
+        with self.assertRaisesRegex(ValueError, 'integer from 15'):
+            validate_config(value)
+        value = validate_config({'targets': []})
+        value['mqtt']['topic_prefix'] = 'piwatch/#'
+        with self.assertRaisesRegex(ValueError, 'without wildcards'):
+            validate_config(value)
+
     def test_old_mains_inference_settings_are_removed_during_migration(self):
         value = validate_config({'targets': [], 'battery': {
             'mains_drop_v': .05, 'mains_recover_rise_v': .05,
@@ -113,6 +138,121 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(status['result']['deliveries'], 4)
         with self.assertRaisesRegex(ValueError, 'Unknown maintenance action'):
             self.store.request_maintenance('reset_everything', 'owner')
+
+
+class MqttBridgeTests(unittest.TestCase):
+    class FakeMqtt:
+        class CallbackAPIVersion:
+            VERSION2 = 2
+        MQTTv311 = 4
+        MQTT_ERR_SUCCESS = 0
+        clients = []
+
+        class Client:
+            def __init__(self, *args, **kwargs):
+                self.messages = []
+                self.on_connect = None
+                self.on_disconnect = None
+                MqttBridgeTests.FakeMqtt.clients.append(self)
+
+            def username_pw_set(self, *args):
+                self.auth = args
+
+            def tls_set(self):
+                self.tls = True
+
+            def will_set(self, *args, **kwargs):
+                self.will = args, kwargs
+
+            def reconnect_delay_set(self, **kwargs):
+                pass
+
+            def connect_async(self, *args, **kwargs):
+                self.connection = args, kwargs
+
+            def loop_start(self):
+                self.on_connect(self, None, None, 0, None)
+
+            def loop_stop(self):
+                pass
+
+            def disconnect(self):
+                pass
+
+            def publish(self, topic, payload, qos, retain):
+                self.messages.append((topic, payload, qos, retain))
+                return types.SimpleNamespace(rc=0)
+
+    def snapshot(self, generated_at=None):
+        return {
+            'schema_version': 2, 'generated_at': generated_at or time.time(),
+            'stale_after_seconds': 10,
+            'monitor': {'state': 'UP'},
+            'metrics': {
+                'temperature_c': 48.25, 'cpu_percent': 17.5,
+                'memory_percent': 31.2, 'disk_percent': 22.0, 'load_1m': .4,
+                'network_rx_bps': 2048, 'network_tx_bps': 1024,
+                'uptime_seconds': 3600,
+            },
+            'targets': {
+                'battery': {'state': 'UP', 'voltage_v': 4.112},
+                'mains': {'state': 'UP'},
+            },
+            'ups_supervisor': {'state': 'IDLE'},
+            'notifications': {
+                'lora': {'pending': 1, 'failed': 0},
+                'smtp': {'pending': 0, 'failed': 2},
+            },
+        }
+
+    def test_discovery_uses_delayed_expiry_without_immediate_availability(self):
+        settings = validate_config({'targets': []})['mqtt']
+        messages = dict(mqtt_bridge.discovery_messages(settings))
+        topic = 'homeassistant/sensor/piwatch_watchdog_pi/cpu_temperature/config'
+        payload = json.loads(messages[topic])
+        self.assertEqual(payload['expire_after'], 30)
+        self.assertEqual(payload['state_topic'], 'piwatch/watchdog-pi/state')
+        self.assertNotIn('availability_topic', payload)
+        self.assertEqual(payload['device']['identifiers'], ['piwatch_watchdog_pi'])
+
+    def test_bridge_publishes_fresh_metrics_and_stops_refreshing_stale_values(self):
+        self.FakeMqtt.clients.clear()
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            store = SettingsStore(root / 'settings.sqlite3')
+            value = config()
+            value['mqtt']['enabled'] = True
+            value['mqtt']['username'] = 'piwatch'
+            value['mqtt']['password'] = 'synthetic-password'
+            store.initialize(value)
+            status_path = root / 'status.json'
+            bridge_status_path = root / 'bridge.json'
+            status_path.write_text(json.dumps(self.snapshot()))
+            bridge = mqtt_bridge.Bridge(
+                store, status_path, bridge_status_path, self.FakeMqtt)
+            bridge.step(now=0)
+            bridge.step(now=1)
+            client = self.FakeMqtt.clients[-1]
+            state_topic = 'piwatch/watchdog-pi/state'
+            state_messages = [message for message in client.messages
+                              if message[0] == state_topic]
+            self.assertEqual(len(state_messages), 1)
+            state = json.loads(state_messages[0][1])
+            self.assertEqual(state['battery_voltage_v'], 4.112)
+            self.assertEqual(state['mains_power'], 'ON')
+            self.assertEqual(state['notifications_failed'], 2)
+            self.assertTrue(state_messages[0][3])
+
+            status_path.write_text(json.dumps(
+                self.snapshot(generated_at=time.time() - 20)))
+            bridge.step(now=7)
+            self.assertEqual(len([message for message in client.messages
+                                 if message[0] == state_topic]), 1)
+            health = json.loads([message for message in client.messages
+                                if message[0] == 'piwatch/watchdog-pi/health'][-1][1])
+            self.assertEqual(health['data_fresh'], 'OFF')
+            self.assertEqual(json.loads(bridge_status_path.read_text())['state'], 'UP')
+            bridge.close()
 
 
 class BatteryTests(unittest.TestCase):
@@ -508,6 +648,21 @@ class DeploymentSafetyTests(unittest.TestCase):
             sudoers)
         self.assertEqual(ups_supervisor.POWEROFF_COMMAND, (
             '/usr/bin/sudo', '-n', '/usr/bin/systemctl', '--no-block', 'poweroff'))
+
+    def test_mqtt_publisher_has_no_hardware_or_deployment_secret_access(self):
+        unit = (ROOT / 'deployment/piwatch-ha-mqtt.service').read_text()
+        directives = {line.strip() for line in unit.splitlines()
+                      if line.strip() and not line.lstrip().startswith('#')}
+        self.assertIn('User=piwatch-mqtt', directives)
+        self.assertIn('SupplementaryGroups=piwatch-config', directives)
+        self.assertIn('NoNewPrivileges=true', directives)
+        self.assertIn('PrivateDevices=true', directives)
+        self.assertFalse(any('i2c' in line or 'gpio' in line
+                             for line in directives if line.startswith('SupplementaryGroups=')))
+        inaccessible = next(line for line in directives
+                            if line.startswith('InaccessiblePaths='))
+        self.assertIn('/etc/piwatch/secrets.env', inaccessible)
+        self.assertIn('/var/lib/piwatch', inaccessible)
 
 
 class MainsTests(unittest.TestCase):
