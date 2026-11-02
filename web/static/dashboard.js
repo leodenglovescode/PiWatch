@@ -1,15 +1,17 @@
 'use strict';
 
+document.body.classList.add('dashboard-page');
+
 const { createApp, h, ref, computed, onMounted, onUnmounted } = Vue;
 
 function element(tag, className, children, attrs = {}) {
   return h(tag, { class: className, ...attrs }, children);
 }
 
-function statusPill(state) {
+function statusPill(state, label = null) {
   const value = String(state || 'UNKNOWN').toUpperCase();
   return element('span', `status-pill state-${value.toLowerCase()}`, [
-    element('span', 'status-dot', []), value
+    element('span', 'status-dot', []), label || value
   ]);
 }
 
@@ -41,13 +43,10 @@ function sparkline(values, min = null, max = null) {
 }
 
 function metricCard(title, value, unit, note, values, options = {}) {
-  const percent = Number.isFinite(options.percent) ? Math.max(0, Math.min(100, options.percent)) : null;
   return element('article', `metric-card ${options.tone || ''}`, [
-    element('div', 'metric-label', title),
-    element('div', 'metric-reading', [element('strong', '', value), unit ? element('span', '', unit) : null]),
-    element('div', 'metric-note', note),
-    percent === null ? null : element('div', 'meter', element('span', '', [], { style: `width:${percent}%` })),
-    sparkline(values, options.min ?? null, options.max ?? null)
+    element('div', 'metric-copy', [element('div', 'metric-label', title), element('div', 'metric-note', note)]),
+    element('div', 'metric-trend', sparkline(values, options.min ?? null, options.max ?? null)),
+    element('div', 'metric-reading', [element('strong', '', value), unit ? element('span', '', unit) : null])
   ]);
 }
 
@@ -56,9 +55,9 @@ function table(headers, rows, empty) {
     cell && typeof cell === 'object' && '__v_isVNode' in cell ? [cell] : String(cell ?? '—')
   )))) : [h('tr', {}, [h('td', { colspan: headers.length, class: 'empty' }, empty)])];
   return element('div', 'table-wrap', h('table', {}, [
-    h('thead', {}, h('tr', {}, headers.map(label => h('th', {}, label)))),
+    h('thead', {}, h('tr', {}, headers.map(label => h('th', { scope: 'col' }, label)))),
     h('tbody', {}, body)
-  ]));
+  ]), { tabindex: 0, role: 'region', 'aria-label': headers.join(', ') });
 }
 
 function healthCard(title, state, rows, accent = '') {
@@ -151,7 +150,7 @@ const Dashboard = {
         addMetricSample(data.metrics);
       } catch (error) {
         connectionFailed.value = true;
-        PW.error(error);
+        PW.error(error, false);
       } finally {
         loading.value = false;
       }
@@ -214,6 +213,12 @@ const Dashboard = {
       } else if (snapshot.value.monitor?.config_error) {
         message = 'The monitor kept its last valid settings because a reload failed.';
         state = 'warn';
+      } else if (upsSupervisorState(snapshot.value.ups_supervisor) === 'DOWN') {
+        message = 'UPS supervisor needs attention. Check power and shutdown readiness.';
+        state = 'bad';
+      } else if (upsSupervisorState(snapshot.value.ups_supervisor) === 'SUSPECT') {
+        message = 'UPS shutdown sequence is active. Check the power supply.';
+        state = 'warn';
       } else if (targetCounts.value.down) {
         message = `${targetCounts.value.down} monitored ${targetCounts.value.down === 1 ? 'target is' : 'targets are'} down.`;
         state = 'bad';
@@ -229,6 +234,7 @@ const Dashboard = {
         message = 'The monitor reports an internal health issue.';
         state = 'warn';
       }
+      if (state === 'good') return null;
       return element('div', `freshness-bar freshness-${state}`, [
         element('span', 'freshness-icon', ''), element('strong', '', message),
         element('span', 'freshness-time', snapshot.value?.available ? `Sample ${PW.age(snapshot.value.age_seconds + elapsed.value)} ago` : '')
@@ -238,25 +244,16 @@ const Dashboard = {
     function summaryCards() {
       const counts = targetCounts.value;
       const notifications = notificationCounts.value;
-      let overallNote = `${counts.up} of ${counts.total} checks healthy`;
-      if (!fresh.value) overallNote = 'Current state unavailable';
-      else if (counts.down) overallNote = `${counts.down} ${counts.down === 1 ? 'check is' : 'checks are'} down`;
-      else if (counts.suspect || counts.unknown) {
-        const attention = counts.suspect + counts.unknown;
-        overallNote = `${attention} ${attention === 1 ? 'check needs' : 'checks need'} attention`;
-      } else if (notifications.failed) {
-        overallNote = `Targets healthy · ${notifications.failed} delivery ${notifications.failed === 1 ? 'failure' : 'failures'} retained`;
-      } else if (snapshot.value?.monitor?.state !== 'UP') overallNote = 'Targets healthy · monitor needs attention';
-      return element('div', 'summary-grid', [
-        element('article', 'summary-card summary-primary', [element('span', 'summary-label', 'Overall status'),
-          element('div', 'summary-state', statusPill(overallState.value)),
-          element('p', '', overallNote)]),
-        element('article', 'summary-card', [element('span', 'summary-label', 'Monitored services'),
-          element('strong', 'summary-value', `${counts.up}/${counts.total}`),
-          element('p', '', counts.down ? `${counts.down} down` : (counts.suspect || counts.unknown) ? `${counts.suspect + counts.unknown} need attention` : 'No active outages')]),
-        element('article', 'summary-card', [element('span', 'summary-label', 'Monitor uptime'),
-          element('strong', 'summary-value summary-duration', PW.age(snapshot.value?.monitor?.uptime_seconds)),
-          element('p', '', `Settings revision ${snapshot.value?.monitor?.settings_revision ?? '—'}`)])
+      const item = (label, value, className = '') => element('div', `overview-stat ${className}`, [
+        element('dt', '', label), element('dd', '', value)
+      ]);
+      const labels = { UP: 'Healthy', DOWN: 'Outage', DEGRADED: 'Needs attention', STALE: 'Stale' };
+      return element('dl', 'overview-strip', [
+        item('Service health', [statusPill(overallState.value, labels[overallState.value]),
+          element('span', 'overview-context', `${counts.up} of ${counts.total} checks passing`)], 'overview-status'),
+        item('Monitor uptime', PW.age(snapshot.value?.monitor?.uptime_seconds)),
+        item('Queued alerts', notifications.pending),
+        item('Delivery failures', notifications.failed, notifications.failed ? 'stat-warning' : '')
       ]);
     }
 
@@ -266,32 +263,30 @@ const Dashboard = {
       const memory = metrics.memory_percent;
       const disk = metrics.disk_percent;
       const temperature = metrics.temperature_c;
-      return panel('Live system metrics', 'Rolling samples collected while this page is open', [
+      return panel('System resources', 'Recent samples',
         element('div', 'metric-grid', [
-          metricCard('CPU', Number.isFinite(cpu) ? cpu.toFixed(1) : '—', '%', `Load ${metrics.load_1m?.toFixed(2) ?? '—'} / ${metrics.load_5m?.toFixed(2) ?? '—'} / ${metrics.load_15m?.toFixed(2) ?? '—'}`, history.value.cpu, { percent: cpu, min: 0, max: 100 }),
-          metricCard('Memory', Number.isFinite(memory) ? memory.toFixed(1) : '—', '%', 'Available system memory', history.value.memory, { percent: memory, min: 0, max: 100 }),
-          metricCard('Disk', Number.isFinite(disk) ? disk.toFixed(1) : '—', '%', 'Root filesystem used', history.value.disk, { percent: disk, min: 0, max: 100 }),
-          metricCard('Temperature', Number.isFinite(temperature) ? temperature.toFixed(1) : '—', '°C', temperature >= 80 ? 'Thermal attention required' : 'CPU thermal sensor', history.value.temperature, { percent: temperature / 85 * 100, min: 20, max: 85, tone: temperature >= 80 ? 'metric-alert' : '' })
-        ]),
-        element('div', 'network-strip', [
-          element('div', 'network-reading', [element('span', 'network-direction', '↓'), element('div', '', [element('span', '', 'Receive'), element('strong', '', formatMegabitsPerSecond(metrics.network_rx_bps))])]),
-          element('div', 'network-chart', sparkline(history.value.rx, 0, null)),
-          element('div', 'network-reading', [element('span', 'network-direction', '↑'), element('div', '', [element('span', '', 'Transmit'), element('strong', '', formatMegabitsPerSecond(metrics.network_tx_bps))])]),
-          element('div', 'network-chart', sparkline(history.value.tx, 0, null))
-        ])
-      ], 'metrics-panel');
+          metricCard('CPU', Number.isFinite(cpu) ? cpu.toFixed(1) : '—', '%', `Load ${metrics.load_1m?.toFixed(2) ?? '—'} / ${metrics.load_5m?.toFixed(2) ?? '—'} / ${metrics.load_15m?.toFixed(2) ?? '—'}`, history.value.cpu, { min: 0, max: 100 }),
+          metricCard('Memory', Number.isFinite(memory) ? memory.toFixed(1) : '—', '%', 'Used memory', history.value.memory, { min: 0, max: 100 }),
+          metricCard('Disk', Number.isFinite(disk) ? disk.toFixed(1) : '—', '%', 'Root filesystem', history.value.disk, { min: 0, max: 100 }),
+          metricCard('Temperature', Number.isFinite(temperature) ? temperature.toFixed(1) : '—', '°C', temperature >= 80 ? 'High temperature' : 'CPU temperature', history.value.temperature, { min: 20, max: 85, tone: temperature >= 80 ? 'metric-alert' : '' }),
+          metricCard('Receive', formatMegabitsPerSecond(metrics.network_rx_bps).replace(' Mbps', ''), 'Mbps', 'Network in', history.value.rx, { min: 0 }),
+          metricCard('Transmit', formatMegabitsPerSecond(metrics.network_tx_bps).replace(' Mbps', ''), 'Mbps', 'Network out', history.value.tx, { min: 0 })
+        ]), 'metrics-panel');
     }
 
     function targetsPanel() {
-      const rows = targets.value.map(([id, value]) => [
-        element('div', 'target-name', [element('strong', '', value.name || id), element('span', '', id)]),
+      const priority = { DOWN: 0, SUSPECT: 1, UNKNOWN: 2, STALE: 3, UP: 4 };
+      const ordered = [...targets.value].sort((a, b) =>
+        (priority[targetState(...a)] ?? 2) - (priority[targetState(...b)] ?? 2));
+      const rows = ordered.map(([id, value]) => [
+        element('div', 'target-name', element('strong', '', value.name || id), { title: id }),
         statusPill(targetState(id, value)), element('div', 'probe-list', probeSummary(value)),
         `${PW.age(Date.now() / 1000 - value.checked_at)} ago`,
         value.down_since ? PW.age(Date.now() / 1000 - value.down_since) : '—'
       ]);
-      return panel('Monitored services', `${targetCounts.value.total} active targets`, [
+      return panel('Monitored services', `${targetCounts.value.total} configured`, [
         table(['Service', 'State', 'Probes', 'Last check', 'Outage'], rows, 'No monitored services are enabled.'),
-        element('div', 'panel-footer', h('a', { href: '/settings' }, 'Configure targets and probes'))
+        element('div', 'panel-footer', h('a', { href: '/settings' }, 'Manage checks →'))
       ], 'targets-panel');
     }
 
@@ -419,13 +414,14 @@ const Dashboard = {
       if (!snapshot.value) return element('div', 'dashboard-loading', [element('span', 'live-dot', []), 'Connecting to PiWatch…']);
       return element('div', 'dashboard-layout', [
         element('div', 'dashboard-heading', [
-          element('div', '', [element('p', 'eyebrow', 'WATCHDOG-PI'), element('h1', '', 'System overview')]),
+          element('div', '', [element('h1', '', 'Overview')]),
           element('div', 'live-controls', [
             element('span', `live-state ${fresh.value ? 'live' : 'offline'}`, [element('span', 'live-dot', []), fresh.value ? 'Live' : 'Stale']),
             element('span', 'last-updated', snapshot.value.available ? `Updated ${PW.age(snapshot.value.age_seconds + elapsed.value)} ago` : 'No sample'),
             h('button', { class: 'secondary refresh-button', type: 'button', disabled: loading.value, onClick: refresh }, loading.value ? 'Refreshing…' : 'Refresh')
           ])
-        ]), freshnessNotice(), summaryCards(), metricsPanel(), targetsPanel()
+        ]), freshnessNotice(), summaryCards(),
+        element('div', 'dashboard-columns', [metricsPanel(), targetsPanel()])
       ]);
     }
 

@@ -95,13 +95,6 @@ class WebTests(unittest.TestCase):
         self.assertIn('id="clear-deliveries"', settings)
         self.assertIn('id="clear-incidents"', settings)
         self.assertNotIn('id="reauth-dialog"', settings)
-        dashboard_asset = self.client.get('/static/dashboard.js')
-        dashboard_script = dashboard_asset.text
-        dashboard_asset.close()
-        self.assertIn('freshnessNotice(), summaryCards(), metricsPanel(), targetsPanel()',
-                      dashboard_script)
-        self.assertNotIn('targetsPanel(), operationsPanel(), deliveryPanel(), incidentsPanel()',
-                         dashboard_script)
 
     def test_authenticated_settings_save_without_step_up_and_do_not_return_secrets(self):
         self.login()

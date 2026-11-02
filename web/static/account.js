@@ -14,7 +14,7 @@ async function loadAccount() {
 accountForm.addEventListener('submit', async event => {
   event.preventDefault(); const button = accountForm.querySelector('button'); button.disabled = true;
   try {
-    if (accountForm.elements.password.value !== accountForm.elements.confirm_password.value) throw new Error('New passwords do not match.');
+    if (accountForm.elements.password.value !== accountForm.elements.confirm_password.value) throw PW.fieldError(accountForm.elements.confirm_password, 'New passwords do not match.');
     await PW.request('/api/account', {username:accountForm.elements.username.value, password:accountForm.elements.password.value, idle_minutes:Number(accountForm.elements.idle_minutes.value)});
     accountForm.elements.password.value = ''; accountForm.elements.confirm_password.value = '';
     await loadAccount(); PW.notice('Account updated. Other sessions were signed out.', true);
@@ -39,7 +39,9 @@ for (const method of ['totp','email']) document.getElementById(method + '-toggle
   } catch (error) {PW.error(error);} finally {await loadAccount().catch(PW.error);}
 });
 function clearEnrollment() {
+  const trigger = document.getElementById((enrollment?.method || 'totp') + '-toggle');
   enrollment = undefined; document.getElementById('enroll').hidden = true;
+  trigger?.focus();
   document.getElementById('totp-qr').removeAttribute('src'); document.getElementById('totp-secret').value = '';
   document.getElementById('confirm-factor').reset();
 }
@@ -50,6 +52,7 @@ document.getElementById('confirm-factor').addEventListener('submit', async event
     const data = await PW.request(`/api/account/${enrollment.method}/confirm`, {challenge:enrollment.challenge,code:event.target.elements.code.value.trim()});
     clearEnrollment(); document.getElementById('recovery').hidden = false;
     document.getElementById('recovery-codes').textContent = data.recovery_codes.join('\n');
+    document.getElementById('recovery-codes').focus();
     await loadAccount(); PW.notice('Verification enabled. Save the recovery codes below.', true);
   } catch (error) {PW.error(error);} finally {button.disabled = false;}
 });

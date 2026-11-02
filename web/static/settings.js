@@ -1,6 +1,15 @@
 'use strict';
 const form = document.getElementById('settings-form');
-let config, revision;
+let config, revision, dirty = false;
+function markDirty() {
+  dirty = true;
+  document.getElementById('save-status').textContent = 'Unsaved changes';
+}
+form.addEventListener('input', markDirty);
+form.addEventListener('change', markDirty);
+window.addEventListener('beforeunload', event => {
+  if (dirty) {event.preventDefault(); event.returnValue = '';}
+});
 const numeric = ['interval_seconds','external_interval_seconds','health_interval_seconds','suspect_after_failures','down_after_failures','recover_after_successes'];
 const targetEditors = document.getElementById('target-editors');
 const mqttSensorDefinitions = {
@@ -24,8 +33,9 @@ function syncBatteryFields() {
 form.elements.battery_enabled.addEventListener('change', syncBatteryFields);
 form.elements.mains_detection_enabled.addEventListener('change', syncBatteryFields);
 function targetEditor(target) {
-  const editor = PW.node('div', undefined, 'target-editor'); editor.dataset.id = target.id;
-  editor.innerHTML = `<div class="target-heading"><label class="check"><input data-field="enabled" type="checkbox">Enabled</label><button type="button" class="danger remove-target">Remove</button></div><div class="form-grid two"><label>Service name<input data-field="name" required maxlength="40"></label><label>IP address / hostname<input data-field="host" required maxlength="253"></label></div><div class="target-checks"><div><label class="check"><input type="checkbox" data-field="ping">Ping</label></div><div><label class="check"><input type="checkbox" data-field="tcp">TCP connection</label><label>TCP port<input type="number" min="1" max="65535" data-field="tcp_port"></label></div><div><label class="check"><input type="checkbox" data-field="http">HTTP response</label><label>HTTP port<input type="number" min="1" max="65535" data-field="http_port"></label><label>HTTP path<input data-field="http_path" maxlength="1024"></label></div></div>`;
+  const editor = PW.node('details', undefined, 'target-editor'); editor.dataset.id = target.id;
+  editor.innerHTML = `<summary><span class="target-summary-name"></span><span class="target-summary-host"></span><span class="target-summary-state"></span></summary><div class="target-body"><div class="target-heading"><label class="check"><input data-field="enabled" type="checkbox">Enable monitoring</label><button type="button" class="danger remove-target">Remove service</button></div><div class="form-grid two"><label>Service name<input data-field="name" required maxlength="40"></label><label>IP address / hostname<input data-field="host" required maxlength="253"></label></div><div class="target-checks"><fieldset class="probe-editor"><legend><label class="check"><input type="checkbox" data-field="ping">Ping</label></legend><p class="field-hint">Check whether the host responds.</p></fieldset><fieldset class="probe-editor"><legend><label class="check"><input type="checkbox" data-field="tcp">TCP</label></legend><label>TCP port<input type="number" min="1" max="65535" data-field="tcp_port"></label></fieldset><fieldset class="probe-editor"><legend><label class="check"><input type="checkbox" data-field="http">HTTP</label></legend><label>HTTP port<input type="number" min="1" max="65535" data-field="http_port"></label><label>HTTP path<input data-field="http_path" maxlength="1024"></label></fieldset></div></div>`;
+
   const input = key => editor.querySelector(`[data-field="${key}"]`);
   input('enabled').checked = target.enabled; input('name').value = target.name; input('host').value = target.host;
   for (const kind of ['ping','tcp','http']) {
@@ -40,8 +50,18 @@ function targetEditor(target) {
     };
     input(kind).addEventListener('change', enableFields); enableFields();
   }
-  editor.querySelector('.remove-target').onclick = () => {if (confirm(`Remove ${input('name').value || 'this service'} from monitoring? Its history will be retained.`)) editor.remove();};
-  targetEditors.append(editor);
+  const summary = () => {
+    editor.querySelector('.target-summary-name').textContent = input('name').value || 'New service';
+    editor.querySelector('.target-summary-host').textContent = input('host').value || 'Host not set';
+    editor.querySelector('.target-summary-state').textContent = input('enabled').checked ? 'Enabled' : 'Disabled';
+  };
+  editor.addEventListener('input', summary); editor.addEventListener('change', summary); summary();
+  editor.querySelector('.remove-target').onclick = () => {
+    if (confirm(`Remove ${input('name').value || 'this service'} from monitoring? Its history will be retained.`)) {
+      editor.remove(); markDirty(); document.getElementById('add-target').focus();
+    }
+  };
+  targetEditors.append(editor); PW.enhanceForms(editor);
 }
 const gatewayDefinitions = {
   lora: {title:'LoRa gateway', fields:[['url','API base URL','url'],['token','Bearer token','password']]},
@@ -51,8 +71,8 @@ const gatewayDefinitions = {
 function gatewayEditors(secretsConfigured) {
   const container = document.getElementById('gateway-editors'); container.replaceChildren();
   for (const [name, definition] of Object.entries(gatewayDefinitions)) {
-    const gateway = config.gateways[name]; const editor = PW.node('div', undefined, 'gateway-editor'); editor.dataset.gateway = name;
-    editor.append(PW.node('h3', definition.title));
+    const gateway = config.gateways[name]; const editor = PW.node('fieldset', undefined, 'gateway-editor'); editor.dataset.gateway = name;
+    editor.append(PW.node('legend', definition.title));
     const enabledLabel = PW.node('label', undefined, 'check'); const enabled = PW.node('input'); enabled.type = 'checkbox'; enabled.dataset.field = 'enabled'; enabled.checked = gateway.enabled; enabledLabel.append(enabled, 'Enabled'); editor.append(enabledLabel);
     const fields = PW.node('div', undefined, 'form-grid two');
     for (const [key, labelText, type] of definition.fields) {
@@ -68,7 +88,7 @@ function gatewayEditors(secretsConfigured) {
       if (type === 'password') {
         const clearLabel = PW.node('label', undefined, 'check'); const clear = PW.node('input'); clear.type = 'checkbox'; clear.dataset.clear = key;
         clearLabel.append(clear, 'Clear this credential');
-        const group = PW.node('div'); group.append(label, clearLabel); fields.append(group);
+        const group = PW.node('div'); const hint = PW.node('p', 'Leave blank to keep the stored credential or service setting.', 'field-hint'); hint.id = `gateway-${name}-${key}-hint`; input.setAttribute('aria-describedby', hint.id); group.append(label, clearLabel, hint); fields.append(group);
       } else fields.append(label);
     }
     editor.append(fields); container.append(editor);
@@ -113,13 +133,15 @@ async function load() {
   form.elements.mqtt_expire_after.value = config.mqtt.expire_after_seconds;
   mqttSensorEditors(config.mqtt.sensors);
   gatewayEditors(data.configured_secrets);
+  dirty = false; form.setAttribute('aria-busy', 'false'); PW.enhanceForms(form);
   document.getElementById('save-settings').disabled = false;
   document.getElementById('save-status').textContent = 'Changes are validated before they are applied.';
 }
 document.getElementById('add-target').onclick = () => {
   if (targetEditors.children.length >= 32) return PW.notice('Configure at most 32 monitored services.');
   targetEditor({id:'target_' + Date.now().toString(36) + Math.random().toString(36).slice(2,6),name:'',host:'',enabled:true,checks:[{type:'ping'}]});
-  targetEditors.lastElementChild.querySelector('[data-field="name"]').focus();
+  targetEditors.lastElementChild.open = true; markDirty();
+  PW.focusField(targetEditors.lastElementChild.querySelector('[data-field="name"]'));
 };
 function readConfig() {
   const value = structuredClone(config);
@@ -130,12 +152,12 @@ function readConfig() {
     if (input('ping').checked) checks.push({type:'ping'});
     if (input('tcp').checked) checks.push({...config.targets.find(t => t.id === editor.dataset.id)?.checks.find(c => c.type === 'tcp'),type:'tcp',port:Number(input('tcp_port').value)});
     if (input('http').checked) checks.push({type:'http',port:Number(input('http_port').value),path:input('http_path').value});
-    if (!checks.length) throw new Error('Select at least one check for each service.');
+    if (!checks.length) throw PW.fieldError(input('ping'), 'Select at least one check for this service.');
     return {id:editor.dataset.id,name:input('name').value.trim(),host:input('host').value.trim(),enabled:input('enabled').checked,checks};
   });
   value.internet.enabled = form.elements.internet_enabled.checked;
   value.internet.targets = form.elements.internet_targets.value.split('\n').map(s => s.trim()).filter(Boolean).map(line => {
-    const separator = line.lastIndexOf(':'); if (separator < 1) throw new Error('Enter each Internet endpoint as IP:port.');
+    const separator = line.lastIndexOf(':'); if (separator < 1) throw PW.fieldError(form.elements.internet_targets, 'Enter each Internet endpoint as IP:port.');
     return {host:line.slice(0,separator).replace(/^\[|\]$/g,''),port:Number(line.slice(separator+1))};
   });
   value.dns.enabled = form.elements.dns_enabled.checked;
@@ -206,3 +228,33 @@ document.getElementById('clear-deliveries').onclick = event =>
 document.getElementById('clear-incidents').onclick = event =>
   clearRecords('clear_incidents', event.currentTarget, 'the full incident history');
 load().catch(PW.error);
+
+const search = document.getElementById('settings-search');
+search.addEventListener('input', () => {
+  const query = search.value.trim().toLowerCase();
+  const results = document.getElementById('settings-results');
+  const list = results.querySelector('ul'); list.replaceChildren(); results.hidden = !query;
+  if (!query) return;
+  const fields = [...form.querySelectorAll('input, select, textarea')].filter(field =>
+    !field.disabled && `${PW.fieldLabel(field)} ${field.closest('.settings-section')?.querySelector('h2')?.textContent || ''}`.toLowerCase().includes(query));
+  document.getElementById('search-count').textContent = `${fields.length} matching settings`;
+  for (const field of fields.slice(0, 12)) {
+    const item = PW.node('li');
+    const link = PW.node('a', PW.fieldLabel(field)); link.href = `#${field.id}`;
+    link.onclick = event => {event.preventDefault(); PW.focusField(field);};
+    item.append(link); list.append(item);
+  }
+});
+for (const link of document.querySelectorAll('.settings-subnav a')) {
+  link.addEventListener('click', event => {
+    event.preventDefault();
+    history.replaceState(null, '', link.hash);
+    document.querySelectorAll('.settings-subnav a').forEach(item => item.removeAttribute('aria-current'));
+    link.setAttribute('aria-current', 'location');
+    const heading = document.querySelector(link.hash + ' h2');
+    if (heading) {
+      heading.focus({preventScroll: true});
+      document.querySelector(link.hash).scrollIntoView({block: 'start'});
+    }
+  });
+}

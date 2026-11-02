@@ -258,3 +258,33 @@ Before rolling back with pending new jobs, verify that its legacy gateways match
 their intended destinations, or keep the watchdog stopped until those jobs have
 been reviewed. Keeping the database alone does not preserve the old code's routing
 behavior for newly configured gateways.
+
+## Dashboard CSS and JavaScript updates
+
+For overview changes confined to `web/static/style.css` and
+`web/static/dashboard.js`, run:
+
+```bash
+sudo bash deployment/update-dashboard-assets.sh
+```
+
+This backs up the installed assets under `/var/backups/piwatch`, stages and
+replaces the two files, then checks that the running panel serves the exact new
+contents. Verification failure restores both originals. No Python code, settings,
+units, or service processes change. Reload the dashboard after deployment.
+Template or Python changes still require the normal deployment procedure.
+
+## Full web interface updates
+
+For template changes or shared browser scripts, use:
+
+```bash
+sudo bash deployment/update-web-interface.sh
+```
+
+This backs up the installed templates and browser assets, compiles the staged
+Jinja templates, and briefly restarts only `piwatch-web`. It checks the login page
+and verifies the served assets against the source. A deployment failure restores
+the previous files and starts the panel again. Watchdog, OLED, radio, MQTT, settings,
+and authentication databases are left in place. The asset-only updater above is
+not sufficient for template changes.

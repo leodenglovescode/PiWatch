@@ -9,9 +9,17 @@
   <script src="/static/common.js" defer></script>
   {% block scripts %}{% endblock %}
 </head>
-<body>
-<header class="topbar"><a class="brand" href="/">PiWatch</a>
-  {% if username %}<nav aria-label="Main navigation"><a href="/" {% if request.path == '/' %}aria-current="page"{% endif %}>Overview</a><a href="/settings" {% if request.path == '/settings' %}aria-current="page"{% endif %}>Settings</a><a href="/account" {% if request.path == '/account' %}aria-current="page"{% endif %}>Account</a></nav>{% endif %}<button id="theme-toggle" class="quiet theme-toggle" type="button">Theme</button>{% if username %}<button id="logout" class="quiet">Sign out</button>{% endif %}
-</header>
-<main>{% block content %}{% endblock %}<p id="notice" class="notice" role="status" aria-live="polite"></p></main>
+<body class="{% if username %}app-shell{% else %}auth-shell{% endif %}">
+<a class="skip-link" href="#main-content">Skip to content</a>
+<header class="app-masthead"><a class="brand" href="/">PiWatch</a><div class="masthead-actions"><button id="theme-toggle" class="quiet theme-toggle" type="button">Theme</button>{% if username %}<span class="masthead-user">{{ username }}</span><button id="logout" class="quiet" type="button">Sign out</button>{% endif %}</div></header>
+{% if username %}<aside class="app-sidebar" aria-label="Application"><nav aria-label="Main navigation">
+<a href="/" {% if request.path == '/' %}aria-current="page"{% endif %}>Overview</a>
+<a href="/settings" {% if request.path == '/settings' %}aria-current="page"{% endif %}>Settings</a>
+<a href="/account" {% if request.path == '/account' %}aria-current="page"{% endif %}>Account</a>
+</nav>{% block section_navigation %}{% endblock %}</aside>{% endif %}
+<main id="main-content" tabindex="-1">
+  <div id="error-summary" class="error-summary" role="alert" tabindex="-1" hidden><h2>Check the following</h2><ul></ul></div>
+  <p id="notice" class="notice" role="status" aria-live="polite"></p>
+  {% block content %}{% endblock %}
+</main>
 </body></html>

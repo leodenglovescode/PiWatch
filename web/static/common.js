@@ -72,10 +72,93 @@ themeMedia.addEventListener('change', () => {
   if (document.documentElement.dataset.themePreference === 'system') applyTheme('system');
 });
 document.getElementById('theme-toggle')?.addEventListener('click', () => {
-  const current = document.documentElement.dataset.themePreference || 'system';
+  const current = document.documentElement.dataset.themePreference || 'light';
   applyTheme(current === 'system' ? 'dark' : current === 'dark' ? 'light' : 'system');
 });
-applyTheme(document.documentElement.dataset.themePreference || 'system');
+applyTheme(document.documentElement.dataset.themePreference || 'light');
 document.getElementById('logout')?.addEventListener('click', async () => {
   try {await PW.request('/api/logout', {}); location.assign('/login');} catch (error) {PW.error(error);}
 });
+
+// Shared form behaviour: explicit labels, visible errors and keyboard recovery.
+let fieldSequence = 0;
+PW.enhanceForms = (root = document) => {
+  for (const form of root.querySelectorAll('form')) form.noValidate = true;
+  for (const field of root.querySelectorAll('input, select, textarea')) {
+    if (!field.id) {
+      const prefix = field.closest('form')?.id || 'control';
+      field.id = `${prefix}-${field.name || field.dataset.field || 'field'}-${++fieldSequence}`;
+    }
+    const label = field.closest('label');
+    if (label) label.htmlFor = field.id;
+    if (!field.dataset.fieldLabel) field.dataset.fieldLabel = field.labels?.[0]?.textContent.trim() || field.name || 'This field';
+  }
+};
+PW.fieldLabel = field => {
+  const context = field.closest('.target-editor')?.querySelector('.target-summary-name')?.textContent
+    || field.closest('[data-gateway]')?.querySelector('legend')?.textContent;
+  const name = field.dataset.fieldLabel || field.name || 'This field';
+  return context ? `${context}: ${name}` : name;
+};
+PW.focusField = field => {
+  for (let parent = field.parentElement; parent; parent = parent.parentElement) {
+    if (parent.tagName === 'DETAILS') parent.open = true;
+  }
+  field.focus({preventScroll: true});
+  field.scrollIntoView({block: 'center'});
+};
+PW.clearErrors = () => {
+  for (const field of document.querySelectorAll('[aria-invalid="true"]')) {
+    field.removeAttribute('aria-invalid');
+    const errorId = `${field.id}-error`;
+    const description = (field.getAttribute('aria-describedby') || '').split(' ').filter(id => id && id !== errorId);
+    if (description.length) field.setAttribute('aria-describedby', description.join(' '));
+    else field.removeAttribute('aria-describedby');
+  }
+  document.querySelectorAll('.field-error').forEach(node => node.remove());
+  const summary = document.getElementById('error-summary');
+  if (summary) {summary.hidden = true; summary.querySelector('ul').replaceChildren();}
+};
+PW.showErrors = (errors, focus = true) => {
+  PW.clearErrors();
+  const summary = document.getElementById('error-summary');
+  if (!summary) return PW.notice(errors[0].message);
+  const list = summary.querySelector('ul');
+  for (const {message, field} of errors) {
+    const item = PW.node('li');
+    if (field) {
+      const note = PW.node('span', message, 'field-error'); note.id = `${field.id}-error`;
+      (field.closest('label') || field).insertAdjacentElement('afterend', note);
+      field.setAttribute('aria-invalid', 'true');
+      field.setAttribute('aria-describedby', `${field.getAttribute('aria-describedby') || ''} ${note.id}`.trim());
+      const link = PW.node('a', message); link.href = `#${field.id}`;
+      link.onclick = event => {event.preventDefault(); PW.focusField(field);}; item.append(link);
+    } else item.textContent = message;
+    list.append(item);
+  }
+  summary.hidden = false; if (focus) summary.focus();
+};
+PW.fieldError = (field, message) => Object.assign(new Error(message), {field});
+PW.error = (error, focus = true) => {
+  if (error.message !== 'Cancelled') PW.showErrors([{message: error.message || 'Request failed', field: error.field}], focus);
+};
+const originalNotice = PW.notice;
+PW.notice = (message, success = false) => {
+  if (success) PW.clearErrors();
+  originalNotice(message, success);
+};
+PW.enhanceForms();
+document.addEventListener('submit', event => {
+  const form = event.target;
+  if (!(form instanceof HTMLFormElement)) return;
+  PW.enhanceForms(form);
+  const errors = [...form.elements].filter(field => field.willValidate && !field.validity.valid)
+    .map(field => ({field, message: `${PW.fieldLabel(field)}: ${field.validationMessage}`}));
+  const password = form.elements.namedItem('password');
+  const confirmation = form.elements.namedItem('confirm_password');
+  if (password && confirmation && password.value !== confirmation.value) {
+    errors.push({field: confirmation, message: 'Confirm new password: the passwords do not match.'});
+  }
+  if (errors.length) {event.preventDefault(); event.stopImmediatePropagation(); PW.showErrors(errors);}
+  else PW.clearErrors();
+}, true);
