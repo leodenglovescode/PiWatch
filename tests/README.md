@@ -7,12 +7,6 @@ python3 -m compileall -q oled lora watchdog web tests
 bash -n deployment/install-local.sh
 ```
 
-Existing Meshtastic environment, hardware-mocked radio/outbox regressions:
-
-```bash
-.venvs/meshtastic/bin/python -m unittest discover -s tests -p test_reliability.py -v
-```
-
 Monitoring/configuration/history/MQTT mapping tests use only the standard library
 and a fake MQTT client:
 
@@ -35,8 +29,7 @@ Bubblewrap can prevent asyncio cross-thread wakeups; run the mocked suites on th
 host if they stall there.
 
 Tests use temporary databases, synthetic passwords/tokens, mocked radio/network
-functions and mocked email sends. They cover durable delivery/ACK handling, radio
-subscription startup, history transactions, revision conflicts, secret redaction,
+functions and mocked email sends. They cover history transactions, revision conflicts, secret redaction,
 config reload without restart, target reconciliation, external probe sampling,
 password/CSRF/session protection, TOTP replay rejection, verified email challenges,
 recovery-code single use and stale status detection. They do not open hardware,

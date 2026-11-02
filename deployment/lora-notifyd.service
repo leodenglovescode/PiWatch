@@ -1,3 +1,5 @@
+# Generic installation template. Existing local install/update scripts preserve the live radio unit.
+# Provision the service user, interpreter, and source paths below before installing this template.
 [Unit]
 Description=Meshtastic LoRa Notification API
 After=network.target
@@ -14,12 +16,12 @@ SupplementaryGroups=dialout
 EnvironmentFile=/etc/lora-notifyd.env
 Environment=PYTHONUNBUFFERED=1
 
-ExecStart=/opt/piwatch/.venvs/meshtastic/bin/python /opt/piwatch/lora/lora-notifyd.py
+ExecStart=/opt/piwatch-radio/bin/python /usr/local/lib/piwatch/lora/lora-notifyd.py
 
 Restart=always
 RestartSec=5
 
-WorkingDirectory=/opt/piwatch
+WorkingDirectory=/usr/local/lib/piwatch/lora
 
 [Install]
 WantedBy=multi-user.target

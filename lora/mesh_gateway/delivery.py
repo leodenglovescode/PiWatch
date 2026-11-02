@@ -8,9 +8,9 @@ import time
 from . import radio
 
 CACHE_PATH = os.environ.get("LORA_CACHE_PATH", "/var/lib/lora-notifyd/delivery.sqlite3")
-MAINTENANCE_INTERVAL = 3 * 86400
+MAINTENANCE_INTERVAL = 3600
 INCOMPLETE_RETENTION = 3 * 86400
-CONFIRMED_RETENTION = 7 * 86400
+CONFIRMED_RETENTION = 3 * 86400
 MAX_DELIVERIES = 10000
 
 
@@ -35,22 +35,26 @@ def prepare_cache(db, now=None):
     if row and now - row[0] < MAINTENANCE_INTERVAL:
         db.commit()
         return False
-    db.execute('DELETE FROM deliveries WHERE result IS NULL AND created_at < ?',
-               (now - INCOMPLETE_RETENTION,))
-    db.execute('DELETE FROM deliveries WHERE result IS NOT NULL AND confirmed_at < ?',
-               (now - CONFIRMED_RETENTION,))
-    db.execute('DELETE FROM deliveries WHERE id IN (SELECT id FROM deliveries '
-               'ORDER BY COALESCE(confirmed_at, created_at) DESC, rowid DESC '
-               'LIMIT -1 OFFSET ?)', (MAX_DELIVERIES,))
+    removed = db.execute(
+        'DELETE FROM deliveries WHERE result IS NULL AND created_at < ?',
+        (now - INCOMPLETE_RETENTION,)).rowcount
+    removed += db.execute(
+        'DELETE FROM deliveries WHERE result IS NOT NULL AND confirmed_at < ?',
+        (now - CONFIRMED_RETENTION,)).rowcount
+    removed += db.execute(
+        'DELETE FROM deliveries WHERE id IN (SELECT id FROM deliveries '
+        'ORDER BY COALESCE(confirmed_at, created_at) DESC, rowid DESC '
+        'LIMIT -1 OFFSET ?)', (MAX_DELIVERIES,)).rowcount
     db.execute("INSERT INTO maintenance(name, completed_at) VALUES ('trim', ?) "
                "ON CONFLICT(name) DO UPDATE SET completed_at=excluded.completed_at", (now,))
     db.commit()
-    try:
-        db.execute('PRAGMA optimize')
-        db.execute('VACUUM')
-    except sqlite3.Error:
-        # Pruning is committed; cache compaction must not block radio delivery.
-        pass
+    if removed:
+        try:
+            db.execute('PRAGMA optimize')
+            db.execute('VACUUM')
+        except sqlite3.Error:
+            # Pruning is committed; cache compaction must not block radio delivery.
+            pass
     return True
 
 def cached_send(message, mode, ack, request_id=None):

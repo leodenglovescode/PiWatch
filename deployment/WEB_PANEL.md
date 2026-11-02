@@ -22,7 +22,7 @@ service. Nothing is uploaded. Do not install by copying only `piwatchd.py`: its
 ## Install from an interactive terminal on the Pi
 
 ```bash
-cd /opt/piwatch
+cd /path/to/piwatch
 sudo bash deployment/install-local.sh
 ```
 
@@ -62,7 +62,7 @@ example drop-in is:
 
 ```ini
 [Service]
-Environment=PIWATCH_WEB_BIND=127.0.0.1
+Environment=PIWATCH_WEB_BIND=192.0.2.99
 Environment=PIWATCH_WEB_PORT=8080
 ```
 
@@ -72,13 +72,47 @@ set `PIWATCH_WEB_SECURE_COOKIE=1`. Keep the backend on loopback when proxying. T
 application ignores untrusted forwarded headers and this release is scoped to
 LAN/VPN use, not direct Internet exposure.
 
+### Local HTTPS with Caddy
+
+The Caddy template serves the hostname and address configured in
+`/etc/piwatch/site.env` with Caddy's internal CA, keeps the Python listener on
+`127.0.0.1:8080`, and enables Secure cookies. Install or update it locally with:
+
+```bash
+# Configure /etc/piwatch/site.env first; see PRIVATE_CONFIGURATION.md.
+sudo bash deployment/enable-caddy-https.sh
+```
+
+The script backs up the previous Caddy and PiWatch web drop-in configuration under
+`/var/backups/piwatch`, installs Caddy from the OS package repository when needed,
+validates the configuration, restarts only `piwatch-web` and Caddy, and verifies the
+HTTPS login endpoint. Caddy's local CA is trusted on the Pi. Other computers and
+phones must import Caddy's public root certificate from
+`/var/lib/caddy/.local/share/caddy/pki/authorities/local/root.crt` to remove the
+browser warning. Never copy the adjacent private key. This configuration is for
+the LAN/VPN only and does not expose the panel through an Internet router.
+
+On this Pi, Caddy owns ports 80 and 443: HTTP redirects to the PiWatch HTTPS
+endpoint. AdGuard Home keeps DNS on TCP/UDP 53 and serves only its admin UI at
+`http://192.0.2.99:3000`. To repeat that guarded web-port migration after an
+AdGuard reinstall, run:
+
+```bash
+sudo bash deployment/move-adguard-web.sh 3000
+```
+
+The migration backs up the private AdGuard configuration, changes only
+`http.address`, validates the staged YAML, and restores the backup automatically if
+the admin UI or DNS listener does not return after restart.
+
 ## Live configuration
 
 Use Settings to configure service names/addresses, ping/TCP/HTTP probes, enable or
 remove targets, edit intervals/thresholds, Internet endpoints, DNS names, INA219
 battery monitoring, Home Assistant MQTT metrics, and gateway settings. Saving
-requires the current password and an enabled second factor. Saves
-are validated and revision-checked, so a stale browser cannot overwrite newer edits.
+requires an authenticated session and the normal CSRF token; it does not ask for
+the password again. Saves are validated and revision-checked, so a stale browser
+cannot overwrite newer edits.
 The panel shows when the watchdog reports the saved revision as active.
 
 New settings do not restart the watchdog. Host/probe edits reset that target's
@@ -89,7 +123,7 @@ unset field uses the watchdog's inherited environment; explicitly clearing a
 credential sets it to empty. Disable a gateway with its Enabled checkbox.
 
 The Home Assistant metrics section controls an independent outbound MQTT publisher.
-Its default broker is `127.0.0.1:1883`; configure a dedicated broker username
+Its default broker is `localhost:1883`; configure a dedicated broker username
 and password before enabling it when anonymous access is disabled. The password is
 write-only in the panel. TLS uses the Pi's system trust store. MQTT topic prefixes
 cannot contain wildcards. The expiry must be at least three publish intervals.
@@ -133,9 +167,10 @@ to restart. Secrets files must remain outside this repository.
 
 ## Clearing test records
 
-The Overview notification and incident panels, and the Stored records section in
-Settings, can clear completed/failed delivery records or incident history. Each
-action requires the current password and any enabled second factor. The web service
+The Stored records section in Settings can clear completed/failed delivery records
+or incident history. Overview stays focused on current status and does not show
+these histories. Each action requires an authenticated session but no step-up
+password or second-factor prompt. The web service
 places a validated request in the shared settings database; the watchdog performs
 the deletion because the panel cannot access its private outbox database. Only the
 `piwatch-web` and `piwatch` service accounts share write access to this control data
@@ -166,8 +201,10 @@ recovery codes; save them outside the Pi. They replace the previous set.
 
 TOTP codes cannot be reused. Email codes expire after five minutes, allow five
 attempts, and can be requested at most once per minute per source address. Login
-and sensitive-action attempts are rate-limited in SQLite across web restarts. An
-SMTP outage does not bypass MFA: use the authenticator or a recovery code.
+attempts are rate-limited in SQLite across web restarts. A signed-in owner has full
+panel privileges; settings, maintenance, account, and MFA changes do not ask for
+the password again. An SMTP outage does not bypass MFA at login: use the
+authenticator or a recovery code.
 
 If all second factors are lost, recover through an interactive terminal on the Pi:
 

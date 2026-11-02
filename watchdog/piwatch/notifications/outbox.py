@@ -15,7 +15,7 @@ from .lora_client import lora_api_send
 log = logging.getLogger("piwatch")
 OUTBOX_PATH = os.environ.get("PIWATCH_OUTBOX_PATH", "/var/lib/piwatch/outbox.sqlite3")
 MAX_ATTEMPTS = 5
-MAINTENANCE_INTERVAL = 3 * 86400
+MAINTENANCE_INTERVAL = 3600
 TERMINAL_JOB_RETENTION = 3 * 86400
 INCIDENT_RETENTION = 90 * 86400
 MAX_TERMINAL_JOBS = 5000
@@ -83,21 +83,23 @@ class Outbox:
             self.next_maintenance = row[0] + MAINTENANCE_INTERVAL
             return False
         try:
+            removed = 0
             with self.db:
-                self.db.execute(
+                removed += self.db.execute(
                     "DELETE FROM jobs WHERE status IN ('done', 'failed') "
-                    "AND finished_at < ?", (now - TERMINAL_JOB_RETENTION,))
-                self.db.execute(
+                    "AND finished_at < ?", (now - TERMINAL_JOB_RETENTION,)).rowcount
+                removed += self.db.execute(
                     "DELETE FROM jobs WHERE id IN (SELECT id FROM jobs "
                     "WHERE status IN ('done', 'failed') "
                     "ORDER BY finished_at DESC, rowid DESC LIMIT -1 OFFSET ?)",
-                    (MAX_TERMINAL_JOBS,))
-                self.db.execute("DELETE FROM incidents WHERE timestamp < ?",
-                                (now - INCIDENT_RETENTION,))
-                self.db.execute(
+                    (MAX_TERMINAL_JOBS,)).rowcount
+                removed += self.db.execute(
+                    "DELETE FROM incidents WHERE timestamp < ?",
+                    (now - INCIDENT_RETENTION,)).rowcount
+                removed += self.db.execute(
                     "DELETE FROM incidents WHERE id IN (SELECT id FROM incidents "
                     "ORDER BY timestamp DESC, rowid DESC LIMIT -1 OFFSET ?)",
-                    (MAX_INCIDENTS,))
+                    (MAX_INCIDENTS,)).rowcount
                 self.db.execute(
                     "INSERT INTO maintenance(name, completed_at) VALUES ('trim', ?) "
                     "ON CONFLICT(name) DO UPDATE SET completed_at=excluded.completed_at",
@@ -106,12 +108,13 @@ class Outbox:
             log.warning('Outbox pruning failed: %s', type(exc).__name__)
             self.next_maintenance = now + 3600
             return False
-        try:
-            self.db.execute('PRAGMA optimize')
-            self.db.execute('VACUUM')
-        except sqlite3.Error as exc:
-            # Pruning is already committed; retry compaction on the next cycle.
-            log.warning('Outbox compaction failed: %s', type(exc).__name__)
+        if removed:
+            try:
+                self.db.execute('PRAGMA optimize')
+                self.db.execute('VACUUM')
+            except sqlite3.Error as exc:
+                # Pruning is already committed; retry compaction on a later deletion.
+                log.warning('Outbox compaction failed: %s', type(exc).__name__)
         self.next_maintenance = now + MAINTENANCE_INTERVAL
         return True
 

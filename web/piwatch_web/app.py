@@ -69,16 +69,6 @@ def create_app(state_dir=None, settings_path=None, status_path=None, secure_cook
             abort(401, description='Sign in again')
         return value
 
-    def require_reauth(data):
-        if not auth.rate_limit('reauth:' + (request.remote_addr or 'local')):
-            abort(429, description='Too many attempts. Try again in five minutes.')
-        if not auth.password_ok(g.owner['username'], data.get('current_password', '')):
-            abort(403, description='Current password or verification code is incorrect')
-        if g.owner['totp'] or g.owner['email']:
-            if not auth.verify_factor(data.get('code', ''), data.get('method', 'totp'), data.get('challenge'),
-                                      'reauth', digest(session['sid'])):
-                abort(403, description='Current password or verification code is incorrect')
-
     def send_code(purpose, binding, recipient=None):
         if not auth.rate_limit('email:' + (request.remote_addr or 'local'), limit=1, window=60):
             abort(429, description='Wait one minute before requesting another email')
@@ -216,7 +206,6 @@ def create_app(state_dir=None, settings_path=None, status_path=None, secure_cook
     @app.put('/api/settings')
     def save_settings():
         data = body()
-        require_reauth(data)
         try:
             revision = settings.save(data['config'], data['revision'], g.owner['username'])
         except ConflictError as exc:
@@ -226,7 +215,6 @@ def create_app(state_dir=None, settings_path=None, status_path=None, secure_cook
     @app.post('/api/maintenance')
     def request_maintenance():
         data = body()
-        require_reauth(data)
         request_id = settings.request_maintenance(data.get('action'), g.owner['username'])
         return jsonify(ok=True, request_id=request_id), 202
 
@@ -248,20 +236,12 @@ def create_app(state_dir=None, settings_path=None, status_path=None, secure_cook
     @app.post('/api/account')
     def change_account():
         data = body()
-        require_reauth(data)
         auth.update_account(data['username'], data.get('password', ''), data['idle_minutes'])
         establish_session()
         return jsonify(ok=True, csrf=session['csrf'])
 
-    @app.post('/api/account/email-code')
-    def reauth_email():
-        if not g.owner['email']:
-            abort(400, description='Email verification is not enabled')
-        return jsonify(challenge=send_code('reauth', digest(session['sid']), g.owner['email']))
-
     @app.post('/api/account/totp/start')
     def start_totp():
-        require_reauth(body())
         secret = pyotp.random_base32()
         token = auth.challenge('totp_setup', secret, digest(session['sid']), ttl=600)
         uri = pyotp.TOTP(secret).provisioning_uri(g.owner['username'], issuer_name='PiWatch')
@@ -282,7 +262,6 @@ def create_app(state_dir=None, settings_path=None, status_path=None, secure_cook
 
     @app.post('/api/account/email/start')
     def start_email():
-        require_reauth(body())
         return jsonify(challenge=send_code('email_setup', digest(session['sid'])))
 
     @app.post('/api/account/email/confirm')
@@ -298,7 +277,6 @@ def create_app(state_dir=None, settings_path=None, status_path=None, secure_cook
     @app.post('/api/account/factor/disable')
     def disable_factor():
         data = body()
-        require_reauth(data)
         if data.get('method_to_disable') not in ('totp', 'email'):
             abort(400)
         auth.disable_factor(data['method_to_disable'])

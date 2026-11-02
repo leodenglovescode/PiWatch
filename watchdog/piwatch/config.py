@@ -22,7 +22,7 @@ MQTT_SENSOR_IDS = (
     'notifications_pending', 'notifications_failed',
 )
 DEFAULT_MQTT = {
-    'enabled': False, 'host': '127.0.0.1', 'port': 1883, 'tls': False,
+    'enabled': False, 'host': os.environ.get('PIWATCH_MQTT_HOST', 'localhost'), 'port': 1883, 'tls': False,
     'username': '', 'password': '', 'topic_prefix': 'piwatch/watchdog-pi',
     'discovery_prefix': 'homeassistant', 'publish_interval_seconds': 1.0,
     'expire_after_seconds': 30, 'sensors': list(MQTT_SENSOR_IDS),

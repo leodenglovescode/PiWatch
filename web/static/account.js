@@ -15,8 +15,7 @@ accountForm.addEventListener('submit', async event => {
   event.preventDefault(); const button = accountForm.querySelector('button'); button.disabled = true;
   try {
     if (accountForm.elements.password.value !== accountForm.elements.confirm_password.value) throw new Error('New passwords do not match.');
-    const credentials = await PW.reauth();
-    await PW.request('/api/account', {username:accountForm.elements.username.value, password:accountForm.elements.password.value, idle_minutes:Number(accountForm.elements.idle_minutes.value),...credentials});
+    await PW.request('/api/account', {username:accountForm.elements.username.value, password:accountForm.elements.password.value, idle_minutes:Number(accountForm.elements.idle_minutes.value)});
     accountForm.elements.password.value = ''; accountForm.elements.confirm_password.value = '';
     await loadAccount(); PW.notice('Account updated. Other sessions were signed out.', true);
   } catch (error) {PW.error(error);} finally {button.disabled = false;}
@@ -24,12 +23,11 @@ accountForm.addEventListener('submit', async event => {
 for (const method of ['totp','email']) document.getElementById(method + '-toggle').addEventListener('click', async event => {
   event.target.disabled = true;
   try {
-    const credentials = await PW.reauth();
     if (account[method]) {
-      await PW.request('/api/account/factor/disable', {...credentials,method_to_disable:method});
+      await PW.request('/api/account/factor/disable', {method_to_disable:method});
       PW.notice('Verification method disabled. Other sessions were signed out.', true);
     } else {
-      const data = await PW.request(`/api/account/${method}/start`, credentials);
+      const data = await PW.request(`/api/account/${method}/start`, {});
       enrollment = {method,challenge:data.challenge};
       document.getElementById('enroll').hidden = false;
       document.getElementById('enroll-title').textContent = method === 'totp' ? 'Scan and verify' : 'Verify your email';

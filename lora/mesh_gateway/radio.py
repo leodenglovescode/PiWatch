@@ -3,6 +3,7 @@
 import glob
 import math
 import os
+import re
 import threading
 import time
 
@@ -12,7 +13,9 @@ from pubsub import pub
 from .command_responder import COMMANDS, CommandResponder, node_number
 
 
-DEST = os.environ.get("LORA_DEST", "!00000001")
+DEST = os.environ.get("LORA_DEST", "")
+if not re.fullmatch(r"![0-9a-fA-F]{8}", DEST):
+    raise ValueError("Set LORA_DEST to the intended destination node ID")
 BIND = os.environ.get("LORA_BIND", "127.0.0.1")
 PORT = int(os.environ.get("LORA_PORT", "8989"))
 ACK_TIMEOUT = float(os.environ.get("LORA_ACK_TIMEOUT", "60"))

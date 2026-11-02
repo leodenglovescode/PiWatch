@@ -24,3 +24,9 @@ backup*/
 # Local agent metadata
 .agents/
 .codex/
+
+# Private installation configuration and agent instructions
+.private/
+.env*
+AGENTS.md
+**/AGENTS.md

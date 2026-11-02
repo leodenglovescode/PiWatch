@@ -254,9 +254,6 @@ const Dashboard = {
         element('article', 'summary-card', [element('span', 'summary-label', 'Monitored services'),
           element('strong', 'summary-value', `${counts.up}/${counts.total}`),
           element('p', '', counts.down ? `${counts.down} down` : (counts.suspect || counts.unknown) ? `${counts.suspect + counts.unknown} need attention` : 'No active outages')]),
-        element('article', 'summary-card', [element('span', 'summary-label', 'Notification queue'),
-          element('strong', 'summary-value', `${notifications.pending + notifications.failed}`),
-          element('p', '', `${notifications.pending} pending · ${notifications.failed} failed`)]),
         element('article', 'summary-card', [element('span', 'summary-label', 'Monitor uptime'),
           element('strong', 'summary-value summary-duration', PW.age(snapshot.value?.monitor?.uptime_seconds)),
           element('p', '', `Settings revision ${snapshot.value?.monitor?.settings_revision ?? '—'}`)])
@@ -428,7 +425,7 @@ const Dashboard = {
             element('span', 'last-updated', snapshot.value.available ? `Updated ${PW.age(snapshot.value.age_seconds + elapsed.value)} ago` : 'No sample'),
             h('button', { class: 'secondary refresh-button', type: 'button', disabled: loading.value, onClick: refresh }, loading.value ? 'Refreshing…' : 'Refresh')
           ])
-        ]), freshnessNotice(), summaryCards(), metricsPanel(), targetsPanel(), operationsPanel(), deliveryPanel(), incidentsPanel()
+        ]), freshnessNotice(), summaryCards(), metricsPanel(), targetsPanel()
       ]);
     }
 

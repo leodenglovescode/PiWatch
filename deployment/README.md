@@ -86,7 +86,7 @@ Multipart replies wait three seconds between pages by default so the radio can
 finish transmitting each packet. Set `LORA_COMMAND_PAGE_DELAY` to override that
 interval; request a missed help page individually with `help N`.
 
-Successful request IDs are cached across service restarts for seven days. Reusing
+Successful request IDs are cached across service restarts for three days. Reusing
 an ID with a different payload during that window returns 409. Retry of an
 unconfirmed send can duplicate a
 message when delivery succeeded but its ACK was lost, or after a crash between
@@ -152,11 +152,12 @@ rotating pages with the shutdown countdown; this is part of the existing 30-seco
 period and adds no delay. On service termination it sends the SSD1306 display-off
 command before exiting.
 
-Every three days, each service prunes and compacts its own delivery database. The
-watchdog removes completed and failed jobs older than three days while preserving
-pending jobs, tracker state, and the separately bounded 90-day incident history.
-The LoRa gateway removes incomplete cache entries after three days and confirmed
-request IDs after seven days. Both delivery tables also have hard row caps.
+Retention sweeps are eligible hourly. The watchdog removes completed and failed
+jobs older than three days while preserving pending jobs, tracker state, and the
+separately bounded 90-day incident history. The LoRa gateway applies the same
+three-day cutoff to incomplete cache entries and confirmed request IDs on the next
+request. Database compaction runs only when rows were removed. Both delivery
+tables also have hard row caps.
 
 Inspect aggregate queue status with a read-only SQLite query, e.g. as the service
 user: `SELECT channel, status, COUNT(*) FROM jobs GROUP BY channel, status;`.

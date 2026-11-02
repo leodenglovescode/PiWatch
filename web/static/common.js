@@ -38,51 +38,8 @@ const PW = {
     if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ${Math.floor(seconds % 3600 / 60)}m`;
     return `${Math.floor(seconds / 86400)}d ${Math.floor(seconds % 86400 / 3600)}h`;
   },
-  async reauth() {
-    const account = await PW.request('/api/account');
-    const dialog = document.getElementById('reauth-dialog');
-    const form = document.getElementById('reauth-form');
-    form.reset();
-    let challenge;
-    const factor = Boolean(account.totp || account.email);
-    document.getElementById('factor-description').hidden = !factor;
-    document.getElementById('reauth-factor').hidden = !factor;
-    form.elements.code.required = factor;
-    for (const option of form.elements.method.options) {
-      option.disabled = option.value === 'totp' ? !account.totp : option.value === 'email' ? !account.email || !account.smtp_ready : false;
-    }
-    form.elements.method.value = account.totp ? 'totp' : account.email && account.smtp_ready ? 'email' : 'recovery';
-    const send = document.getElementById('reauth-send-email');
-    const change = () => {send.hidden = !factor || form.elements.method.value !== 'email';};
-    form.elements.method.onchange = change;
-    change();
-    document.getElementById('reauth-notice').textContent = '';
-    send.onclick = async () => {
-      send.disabled = true;
-      try {
-        challenge = (await PW.request('/api/account/email-code', {})).challenge;
-        document.getElementById('reauth-notice').textContent = 'Code sent. Check your email.';
-      } catch (error) {document.getElementById('reauth-notice').textContent = error.message;}
-      finally {send.disabled = false;}
-    };
-    dialog.showModal();
-    form.elements.current_password.focus();
-    return new Promise((resolve, reject) => {
-      let submitted = false;
-      form.onsubmit = event => {
-        event.preventDefault();
-        submitted = true;
-        const data = {current_password: form.elements.current_password.value, method: form.elements.method.value,
-                      code: form.elements.code.value.trim(), challenge};
-        form.reset(); dialog.close(); resolve(data);
-      };
-      document.getElementById('reauth-cancel').onclick = () => dialog.close();
-      dialog.onclose = () => {form.reset(); if (!submitted) reject(new Error('Cancelled'));};
-    });
-  },
   async runMaintenance(action) {
-    const credentials = await PW.reauth();
-    const queued = await PW.request('/api/maintenance', {action, ...credentials});
+    const queued = await PW.request('/api/maintenance', {action});
     for (let attempt = 0; attempt < 20; attempt += 1) {
       await new Promise(resolve => setTimeout(resolve, 250));
       const status = await PW.request(`/api/maintenance/${queued.request_id}`);

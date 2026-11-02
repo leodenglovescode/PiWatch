@@ -51,7 +51,7 @@ class WebTests(unittest.TestCase):
 
     def setup_totp(self):
         self.login()
-        result = self.post('/api/account/totp/start', {'current_password':PASSWORD})
+        result = self.post('/api/account/totp/start', {})
         self.assertEqual(result.status_code, 200)
         secret = result.json['secret']
         code = pyotp.TOTP(secret).now()
@@ -94,25 +94,28 @@ class WebTests(unittest.TestCase):
         self.assertIn('GPIO17 · physical pin 11', settings)
         self.assertIn('id="clear-deliveries"', settings)
         self.assertIn('id="clear-incidents"', settings)
+        self.assertNotIn('id="reauth-dialog"', settings)
+        dashboard_asset = self.client.get('/static/dashboard.js')
+        dashboard_script = dashboard_asset.text
+        dashboard_asset.close()
+        self.assertIn('freshnessNotice(), summaryCards(), metricsPanel(), targetsPanel()',
+                      dashboard_script)
+        self.assertNotIn('targetsPanel(), operationsPanel(), deliveryPanel(), incidentsPanel()',
+                         dashboard_script)
 
-    def test_settings_require_password_and_do_not_return_secrets(self):
+    def test_authenticated_settings_save_without_step_up_and_do_not_return_secrets(self):
         self.login()
         value = self.client.get('/api/settings').json
         value['config']['gateways']['lora']['token'] = 'synthetic-sensitive-token'
         value['config']['mqtt']['password'] = 'synthetic-mqtt-password'
-        self.assertEqual(self.post('/api/settings', value, 'PUT').status_code, 403)
-        value['current_password'] = PASSWORD
         self.assertEqual(self.post('/api/settings', value, 'PUT').status_code, 200)
         self.assertNotIn('synthetic-sensitive-token', self.client.get('/api/settings').text)
         self.assertNotIn('synthetic-mqtt-password', self.client.get('/api/settings').text)
         self.assertEqual(self.post('/api/settings', value, 'PUT').status_code, 409)
 
-    def test_maintenance_clear_requires_reauthentication_and_is_trackable(self):
+    def test_maintenance_clear_requires_login_and_is_trackable(self):
         self.login()
-        self.assertEqual(self.post('/api/maintenance', {
-            'action':'clear_deliveries'}).status_code, 403)
-        queued = self.post('/api/maintenance', {
-            'action':'clear_deliveries','current_password':PASSWORD})
+        queued = self.post('/api/maintenance', {'action':'clear_deliveries'})
         self.assertEqual(queued.status_code, 202)
         request_id = queued.json['request_id']
         self.assertEqual(self.client.get('/api/maintenance/' + request_id).json['status'],
@@ -121,8 +124,7 @@ class WebTests(unittest.TestCase):
         status = self.client.get('/api/maintenance/' + request_id)
         self.assertEqual(status.json['result']['deliveries'], 3)
         self.assertEqual(status.json['status'], 'complete')
-        self.assertEqual(self.post('/api/maintenance', {
-            'action':'unknown','current_password':PASSWORD}).status_code, 400)
+        self.assertEqual(self.post('/api/maintenance', {'action':'unknown'}).status_code, 400)
 
     def test_login_rate_limit(self):
         for _ in range(8):
@@ -139,7 +141,7 @@ class WebTests(unittest.TestCase):
     def test_password_change_revokes_other_sessions(self):
         self.login()
         copied = self.client.get_cookie('piwatch_session').value
-        response = self.post('/api/account', {'current_password':PASSWORD,'username':'newowner','password':'replacement long passphrase','idle_minutes':15})
+        response = self.post('/api/account', {'username':'newowner','password':'replacement long passphrase','idle_minutes':15})
         self.assertEqual(response.status_code, 200)
         self.assertEqual(self.client.get('/api/account').json['username'], 'newowner')
         self.client.set_cookie('piwatch_session', copied)
@@ -166,14 +168,14 @@ class WebTests(unittest.TestCase):
     def test_email_unavailable_until_smtp_configured_and_verified(self):
         self.login()
         self.assertFalse(self.client.get('/api/account').json['smtp_ready'])
-        self.assertEqual(self.post('/api/account/email/start', {'current_password':PASSWORD}).status_code, 400)
+        self.assertEqual(self.post('/api/account/email/start', {}).status_code, 400)
         self.configure_smtp()
         self.assertTrue(self.client.get('/api/account').json['smtp_ready'])
         # Reset the test rate bucket; failed setup also consumes a resend attempt.
         with self.auth.db() as db:
             db.execute('DELETE FROM attempts')
         with patch('piwatch_web.app.send_email_sync') as send:
-            start = self.post('/api/account/email/start', {'current_password':PASSWORD})
+            start = self.post('/api/account/email/start', {})
         self.assertEqual(start.status_code, 200)
         self.assertFalse(self.client.get('/api/account').json['email'])
         code = re.search(r'\b\d{8}\b', send.call_args.args[1]).group()
@@ -228,16 +230,11 @@ class WebTests(unittest.TestCase):
         self.assertEqual(verified.status_code, 200)
         self.assertEqual(self.client.get('/api/status').status_code, 200)
 
-    def test_mfa_is_required_to_change_account_or_gateways(self):
-        secret, code, recovery = self.setup_totp()
+    def test_authenticated_session_has_full_privileges_with_mfa_enabled(self):
+        self.setup_totp()
         data = self.client.get('/api/settings').json
-        data['current_password'] = PASSWORD
-        self.assertEqual(self.post('/api/settings', data, 'PUT').status_code, 403)
-        self.assertEqual(self.post('/api/maintenance', {
-            'action':'clear_deliveries','current_password':PASSWORD}).status_code, 403)
-        self.assertEqual(self.post('/api/maintenance', {
-            'action':'clear_deliveries','current_password':PASSWORD,
-            'method':'recovery','code':recovery[1]}).status_code, 202)
-        data.update(method='recovery',code=recovery[0])
         self.assertEqual(self.post('/api/settings', data, 'PUT').status_code, 200)
-        self.assertEqual(self.post('/api/settings', data, 'PUT').status_code, 403)
+        self.assertEqual(self.post('/api/maintenance', {
+            'action':'clear_deliveries'}).status_code, 202)
+        self.assertEqual(self.post('/api/account/factor/disable', {
+            'method_to_disable':'totp'}).status_code, 200)

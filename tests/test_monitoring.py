@@ -108,7 +108,7 @@ class SettingsTests(unittest.TestCase):
 
     def test_mqtt_defaults_and_expiry_are_validated(self):
         value = validate_config({'targets': []})
-        self.assertEqual(value['mqtt']['host'], '127.0.0.1')
+        self.assertEqual(value['mqtt']['host'], 'localhost')
         self.assertEqual(value['mqtt']['publish_interval_seconds'], 1.0)
         self.assertEqual(value['mqtt']['expire_after_seconds'], 30)
         self.assertEqual(value['mqtt']['sensor_schema_version'], 2)

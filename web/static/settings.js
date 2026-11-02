@@ -170,8 +170,8 @@ function readConfig() {
 form.addEventListener('submit', async event => {
   event.preventDefault(); const button = document.getElementById('save-settings'); button.disabled = true;
   try {
-    const value = readConfig(); const credentials = await PW.reauth();
-    const saved = await PW.request('/api/settings', {config:value,revision,...credentials}, 'PUT');
+    const value = readConfig();
+    const saved = await PW.request('/api/settings', {config:value,revision}, 'PUT');
     await load();
     const status = document.getElementById('save-status'); status.textContent = `Saved revision ${saved.revision}. Waiting for the monitor…`;
     PW.notice('Settings saved.', true);
