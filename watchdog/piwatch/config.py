@@ -31,8 +31,10 @@ DEFAULT_MQTT = {
 LEGACY_MAINS_FIELDS = {'mains_drop_v', 'mains_recover_rise_v', 'mains_window_seconds',
                        'discharge_polarity', 'discharge_shunt_mv'}
 SECRET_FIELDS = {'lora': ('token',), 'smtp': ('password',),
-                 'home_assistant': ('webhook_id',), 'mqtt': ('password',)}
+                 'home_assistant': ('webhook_id',), 'mqtt': ('password',),
+                 'ntfy': ('username', 'password')}
 GATEWAY_FIELDS = {
+    'ntfy': {'enabled', 'heartbeat_enabled', 'url', 'topic', 'heartbeat_topic', 'username', 'password', 'tls_trust'},
     'lora': {'enabled', 'url', 'token'},
     'smtp': {'enabled', 'host', 'port', 'security', 'username', 'password', 'sender', 'recipient'},
     'home_assistant': {'enabled', 'url', 'webhook_id'},
@@ -207,6 +209,16 @@ def _validate_config(raw):
     if previous_sensor_schema < 2 and 'battery_percentage' not in sensors:
         sensors.append('battery_percentage')
     mqtt['sensor_schema_version'] = DEFAULT_MQTT['sensor_schema_version']
+    policy = config.setdefault('network_policy', {})
+    if not isinstance(policy, dict) or set(policy) - {'suspect_after_failures', 'down_after_failures', 'recover_after_successes'}:
+        raise ValueError('Unknown network policy setting')
+    policy = config['network_policy'] = {'suspect_after_failures': 1, 'down_after_failures': 3,
+                                         'recover_after_successes': 1, **policy}
+    for key, value in policy.items():
+        if isinstance(value, bool) or not isinstance(value, int) or not 1 <= value <= 1000:
+            raise ValueError('Network thresholds must be positive integers')
+    if policy['down_after_failures'] != 3 or policy['suspect_after_failures'] > 3:
+        raise ValueError('Network/service outages require three failed reports')
     gateways = config.setdefault('gateways', {})
     if not isinstance(gateways, dict) or set(gateways) - GATEWAY_FIELDS.keys():
         raise ValueError('Unknown message gateway')
@@ -214,11 +226,30 @@ def _validate_config(raw):
         gateway = gateways.setdefault(name, {})
         if not isinstance(gateway, dict) or set(gateway) - allowed:
             raise ValueError(f'Unknown {name} setting')
+        if name == 'ntfy':
+            for key, value in {'enabled': False, 'heartbeat_enabled': False, 'url': '',
+                               'topic': 'piwatch-alerts', 'heartbeat_topic': 'piwatch-heartbeat',
+                               'username': '', 'password': '', 'tls_trust': 'system'}.items():
+                gateway.setdefault(key, value)
+            if not isinstance(gateway['heartbeat_enabled'], bool):
+                raise ValueError('Heartbeat enabled must be a boolean')
+            if gateway['tls_trust'] not in ('system', 'private_ca'):
+                raise ValueError('Choose system trust or the installed private CA')
+            for key in ('topic', 'heartbeat_topic'):
+                if not isinstance(gateway[key], str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}', gateway[key]):
+                    raise ValueError('ntfy topics must contain 1–64 letters, digits, underscores or hyphens')
+            if gateway['topic'] == gateway['heartbeat_topic']:
+                raise ValueError('Alerts and heartbeats require separate topics')
+            if ':' in gateway['username']:
+                raise ValueError('ntfy username cannot contain a colon')
+            if gateway['enabled'] or gateway['heartbeat_enabled']:
+                if not gateway['url'] or not gateway['username'] or not gateway['password']:
+                    raise ValueError('Enabled ntfy publishing requires URL and credentials')
         gateway.setdefault('enabled', True)
         if not isinstance(gateway['enabled'], bool):
             raise ValueError('Gateway enabled must be a boolean')
         for key, value in gateway.items():
-            if key not in ('enabled', 'port') and (not isinstance(value, str) or len(value) > 4096 or '\n' in value or '\r' in value):
+            if key not in ('enabled', 'heartbeat_enabled', 'port') and (not isinstance(value, str) or len(value) > 4096 or '\n' in value or '\r' in value):
                 raise ValueError(f'Invalid {name} {key}')
         if gateway.get('url'):
             url = urlsplit(gateway['url'])
@@ -226,6 +257,13 @@ def _validate_config(raw):
                 raise ValueError('Gateway URL must be HTTP(S), without credentials, query, or fragment')
             if url.port is not None:
                 port(url.port)
+            if name == 'ntfy':
+                if url.scheme != 'https' or url.path not in ('', '/'):
+                    raise ValueError('ntfy requires an HTTPS base URL without a path')
+                try:
+                    ipaddress.ip_address(url.hostname)
+                except ValueError:
+                    raise ValueError('ntfy requires a literal IP address to bound heartbeat I/O') from None
             gateway['url'] = gateway['url'].rstrip('/')
         if name == 'smtp' and gateway.get('host'):
             host(gateway['host'])
@@ -233,7 +271,7 @@ def _validate_config(raw):
             port(gateway['port'])
         if 'security' in gateway and gateway['security'] not in ('ssl', 'starttls'):
             raise ValueError('SMTP requires SSL or STARTTLS')
-    return {key: config[key] for key in ('targets', 'internet', 'dns', 'battery', 'mqtt', 'gateways', 'interval_seconds',
+    return {key: config[key] for key in ('targets', 'internet', 'dns', 'battery', 'mqtt', 'gateways', 'network_policy', 'interval_seconds',
             'external_interval_seconds', 'health_interval_seconds', 'suspect_after_failures',
             'down_after_failures', 'recover_after_successes')}
 

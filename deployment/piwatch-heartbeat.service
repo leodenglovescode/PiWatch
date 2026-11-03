@@ -1,0 +1,29 @@
+[Unit]
+Description=PiWatch independent private VPS heartbeat
+Wants=network-online.target
+After=network-online.target piwatch.service
+
+[Service]
+Type=simple
+User=piwatch-heartbeat
+Group=piwatch-heartbeat
+SupplementaryGroups=piwatch-config
+WorkingDirectory=/usr/local/lib/piwatch
+ExecStart=/usr/bin/python3 /usr/local/lib/piwatch/piwatch-heartbeat.py
+Environment=PYTHONUNBUFFERED=1
+RuntimeDirectory=piwatch-heartbeat
+RuntimeDirectoryMode=0755
+UMask=0027
+Restart=always
+RestartSec=1
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/run/piwatch-heartbeat
+InaccessiblePaths=-/etc/piwatch/secrets.env -/etc/lora-notifyd.env -/etc/piwatch-ntfy/credentials.json -/var/lib/piwatch -/var/lib/piwatch-web -/var/lib/lora-notifyd
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+[Install]
+WantedBy=multi-user.target

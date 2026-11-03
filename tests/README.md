@@ -47,3 +47,10 @@ input coordination, and OLED power-event/countdown presentation.
 
 After an authorized deployment, hardware validation still needs an intended test
 window/destination. Follow `deployment/WEB_PANEL.md` and `deployment/README.md`.
+
+Native ntfy tests use synthetic credentials and mocked transport. Run them on the
+host if sandbox asyncio/thread wakeups stall. `test_ntfy.py` covers total transport
+deadlines, TLS trust, redirect rejection, tracker policy, long-outage persistence,
+and independent heartbeat cadence; `test_ntfy_web.py` covers secret preservation,
+maintenance acknowledgement and labelled test queuing. Cutover and verifier tests
+use temporary databases/process fixtures and never contact the VPS or hardware.

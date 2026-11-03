@@ -207,14 +207,33 @@ def create_app(state_dir=None, settings_path=None, status_path=None, secure_cook
     def save_settings():
         data = body()
         try:
+            _, previous = settings.read()
+            if (previous['gateways']['ntfy']['heartbeat_enabled'] and
+                    not data['config'].get('gateways', {}).get('ntfy', {}).get('heartbeat_enabled', False) and
+                    data.get('acknowledge_heartbeat_disable') is not True):
+                abort(400, description='Disabling heartbeats triggers the VPS missing-heartbeat warning. Acknowledge maintenance first.')
             revision = settings.save(data['config'], data['revision'], g.owner['username'])
         except ConflictError as exc:
             return jsonify(error=str(exc)), 409
         return jsonify(ok=True, revision=revision)
 
+    @app.post('/api/ntfy/test')
+    def test_ntfy():
+        from piwatch.notifications.ntfy import activated
+        if not auth.rate_limit('ntfy-test:' + g.owner['username'], limit=1, window=30):
+            abort(429, description='Wait thirty seconds before another test')
+        _, config = settings.read()
+        if not config['gateways']['ntfy']['enabled'] or not activated():
+            abort(409, description='Native ntfy alerts must be enabled and activated first')
+        request_id = settings.request_maintenance('test_ntfy', g.owner['username'])
+        return jsonify(ok=True, request_id=request_id, state='queued',
+                       message='Test queued. VPS acceptance does not confirm phone receipt.'), 202
+
     @app.post('/api/maintenance')
     def request_maintenance():
         data = body()
+        if data.get('action') not in ('clear_deliveries', 'clear_incidents', 'clear_all'):
+            abort(400, description='Unknown maintenance action')
         request_id = settings.request_maintenance(data.get('action'), g.owner['username'])
         return jsonify(ok=True, request_id=request_id), 202
 

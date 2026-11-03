@@ -11,6 +11,7 @@ from .messages import build_message, build_lora_messages
 from .home_assistant import send_ha_webhook
 from .email import send_email
 from .lora_client import lora_api_send
+from .ntfy import send_ntfy, NtfyError, activated, transient_error
 
 log = logging.getLogger("piwatch")
 OUTBOX_PATH = os.environ.get("PIWATCH_OUTBOX_PATH", "/var/lib/piwatch/outbox.sqlite3")
@@ -191,6 +192,10 @@ class Outbox:
                                and not (name == "home_assistant" and state == "DOWN")},
                         "lora": lora_payload,
                     }
+                if gateways and gateways.get('ntfy', {}).get('enabled'):
+                    display = getattr(trackers[name], 'display', name)
+                    payloads['ntfy'] = {'title': 'PiWatch: ' + display + (' unavailable' if state == 'DOWN' else ' recovered'),
+                                        'message': message, 'severity': severity, 'incident_id': incident_id}
                 for channel, payload in payloads.items():
                     if gateways is not None:
                         if channel == 'lora' and not gateways['lora']['enabled']:
@@ -201,7 +206,7 @@ class Outbox:
                             continue
                         if channel == 'smtp' and not gateways['smtp']['enabled']:
                             continue
-                        payload['gateways'] = gateways
+                        payload['gateways'] = {'ntfy': dict(gateways['ntfy'])} if channel == 'ntfy' else gateways
                     self.db.execute(
                         "INSERT INTO jobs (id, channel, payload, created_at, priority) "
                         "VALUES (?, ?, ?, ?, ?)",
@@ -209,6 +214,18 @@ class Outbox:
                          time.time(), 1 if name in ('shutdown', 'shutdown_test') else 0))
                     job_ids.append(incident_id + ':' + channel)
         return job_ids
+
+    def queue_ntfy_test(self, request_id, settings):
+        if not settings.get('enabled'):
+            raise ValueError('Enable the ntfy alert channel before testing')
+        job_id = request_id + ':ntfy'
+        payload = {'title': 'PiWatch test notification',
+                   'message': 'Operator-requested PiWatch integration test. Please confirm receipt on your phone.',
+                   'severity': 'recovery', 'incident_id': request_id, 'gateways': {'ntfy': dict(settings)}}
+        with self.db:
+            self.db.execute("INSERT OR IGNORE INTO jobs (id, channel, payload, created_at) VALUES (?, 'ntfy', ?, ?)",
+                            (job_id, json.dumps(payload), time.time()))
+        return job_id
 
     async def wait_started(self, job_ids, timeout):
         """Wait briefly until every urgent job has entered a delivery attempt."""
@@ -238,12 +255,22 @@ class Outbox:
 
     def summary(self):
         counts = {channel: {status: 0 for status in ("pending", "done", "failed")}
-                  for channel in ("ip", "ha", "smtp", "lora")}
+                  for channel in ("ip", "ha", "smtp", "lora", "ntfy")}
         for channel, status, count in self.db.execute(
             "SELECT channel, status, COUNT(*) FROM jobs GROUP BY channel, status"
         ):
-            counts[channel][status] = count
+            counts.setdefault(channel, {key: 0 for key in ('pending', 'done', 'failed')})[status] = count
+        counts['ntfy']['retrying'] = self.db.execute("SELECT COUNT(*) FROM jobs WHERE channel='ntfy' AND status='pending' AND last_error IS NOT NULL").fetchone()[0]
         return counts
+
+    def ntfy_deliveries(self, limit=20):
+        rows = self.db.execute(
+            "SELECT id, status, attempts, created_at, finished_at, last_error, next_attempt FROM jobs "
+            "WHERE channel='ntfy' ORDER BY rowid DESC LIMIT ?", (limit,))
+        return [dict(id=row[0], status=row[1], attempts=row[2], created_at=row[3],
+                     accepted_at=row[4] if row[1] == 'done' else None, finished_at=row[4], error=row[5], next_attempt=row[6],
+                     retrying=row[1] == 'pending' and row[5] is not None)
+                for row in rows]
 
     def attention(self):
         # Publish operational metadata only, never message bodies or credentials.
@@ -256,6 +283,9 @@ class Outbox:
 
     async def work(self, channel):
         while self.is_running():
+            if channel == 'ntfy' and not activated():
+                await asyncio.sleep(0.25)
+                continue
             # A final shutdown alert preempts ordinary work; order is preserved
             # within each priority, including retry backoff.
             row = self.db.execute(
@@ -270,7 +300,7 @@ class Outbox:
             job_id, raw, stage, attempts, _ = row
             payload = json.loads(raw)
             # Count attempts before I/O so process crashes cannot retry forever.
-            if attempts >= MAX_ATTEMPTS:
+            if attempts >= MAX_ATTEMPTS and channel != 'ntfy':
                 with self.db:
                     self.db.execute(
                         "UPDATE jobs SET status='failed', finished_at=? WHERE id=?",
@@ -293,6 +323,13 @@ class Outbox:
                             (stage, "done" if stage == 2 else "pending",
                              time.time() if stage == 2 else None, job_id),
                         )
+                elif channel == 'ntfy':
+                    await asyncio.to_thread(send_ntfy, payload['title'], payload['message'],
+                                            payload['severity'], payload['incident_id'],
+                                            payload['gateways']['ntfy'])
+                    with self.db:
+                        self.db.execute("UPDATE jobs SET status='done', last_error=NULL, finished_at=? WHERE id=?",
+                                        (time.time(), job_id))
                 elif channel == 'ha':
                     await send_ha_webhook(
                         payload['title'], payload['message'], payload['severity'],
@@ -334,12 +371,13 @@ class Outbox:
             except Exception as exc:
                 # Store only the exception type: URLs/errors can contain credentials.
                 attempts += 1
-                status = "failed" if attempts >= MAX_ATTEMPTS else "pending"
+                keep_queued = channel == 'ntfy' and transient_error(exc)
+                status = "failed" if attempts >= MAX_ATTEMPTS and not keep_queued else "pending"
                 with self.db:
                     self.db.execute(
                         "UPDATE jobs SET status=?, next_attempt=?, last_error=?, finished_at=? WHERE id=?",
-                        (status, time.time() + min(300, 5 * 2 ** (attempts - 1)),
-                         type(exc).__name__, time.time() if status == 'failed' else None,
+                        (status, time.time() + min(300, 5 * 2 ** min(attempts - 1, 6)),
+                         exc.code if isinstance(exc, NtfyError) else type(exc).__name__, time.time() if status == 'failed' else None,
                          job_id),
                     )
                 log.error("Notification %s: channel=%s job=%s attempt=%s error=%s",

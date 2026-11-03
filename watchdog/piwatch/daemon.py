@@ -165,7 +165,11 @@ def process_maintenance(store, outbox):
         return
     for request in requests:
         try:
-            result = outbox.clear_records(request['action'])
+            if request['action'] == 'test_ntfy':
+                _, settings = store.read()
+                result = {'job_id': outbox.queue_ntfy_test(request['id'], settings['gateways']['ntfy'])}
+            else:
+                result = outbox.clear_records(request['action'])
         except Exception as exc:
             try:
                 store.finish_maintenance(request['id'], {'error': type(exc).__name__},
@@ -183,7 +187,7 @@ def process_maintenance(store, outbox):
             log.error('Could not record maintenance completion: %s', type(exc).__name__)
             continue
         log.info('Maintenance completed: action=%s deliveries=%d incidents=%d actor=%s',
-                 request['action'], result['deliveries'], result['incidents'],
+                 request['action'], result.get('deliveries', 0), result.get('incidents', 0),
                  request['actor'])
 
 
@@ -215,6 +219,11 @@ def reconcile_trackers(config, previous, trackers):
         tracker.suspect_after = 1 if name == 'mains' else config['suspect_after_failures']
         tracker.down_after = 1 if name == 'mains' else config['down_after_failures']
         tracker.recover_after = 1 if name == 'mains' else config['recover_after_successes']
+        if name not in ('battery', 'mains'):
+            policy = config.get('network_policy', {'suspect_after_failures': 1, 'down_after_failures': 3, 'recover_after_successes': 1})
+            tracker.suspect_after = policy['suspect_after_failures']
+            tracker.down_after = policy['down_after_failures']
+            tracker.recover_after = policy['recover_after_successes']
         tracker.display = definition['name']
         tracker.definition = json.dumps(comparable(definition), sort_keys=True)
         updated[name] = tracker
@@ -249,7 +258,7 @@ async def run(config=None):
     pico = PicoSupervisor()
     hardware_lock = asyncio.Lock()
     workers = [asyncio.create_task(outbox.work(channel))
-               for channel in ('ip', 'ha', 'smtp', 'lora')]
+               for channel in ('ip', 'ha', 'smtp', 'lora', 'ntfy')]
     workers.append(asyncio.create_task(health_worker(health, stop, current)))
     next_probe = 0
     results = {}

@@ -133,6 +133,19 @@ async function load() {
   form.elements.mqtt_expire_after.value = config.mqtt.expire_after_seconds;
   mqttSensorEditors(config.mqtt.sensors);
   gatewayEditors(data.configured_secrets);
+  form.elements.network_suspect.value = config.network_policy.suspect_after_failures;
+  form.elements.network_recover.value = config.network_policy.recover_after_successes;
+  const ntfy = config.gateways.ntfy;
+  for (const field of ['enabled', 'heartbeat_enabled']) form.elements['ntfy_' + field].checked = ntfy[field];
+  for (const field of ['url', 'topic', 'heartbeat_topic', 'tls_trust']) form.elements['ntfy_' + field].value = ntfy[field];
+  for (const field of ['username', 'password']) {
+    form.elements['ntfy_' + field].value = '';
+    form.elements['ntfy_' + field + '_clear'].checked = false;
+    form.elements['ntfy_' + field].placeholder = data.configured_secrets.ntfy?.[field] ? 'Stored — leave blank to keep' : 'Not configured';
+  }
+  form.elements.ntfy_disable_ack.checked = false;
+  document.getElementById('ntfy-configured').textContent = 'Username ' + (data.configured_secrets.ntfy?.username ? 'stored' : 'not configured') + '; password ' + (data.configured_secrets.ntfy?.password ? 'stored' : 'not configured') + '.';
+
   dirty = false; form.setAttribute('aria-busy', 'false'); PW.enhanceForms(form);
   document.getElementById('save-settings').disabled = false;
   document.getElementById('save-status').textContent = 'Changes are validated before they are applied.';
@@ -155,6 +168,16 @@ function readConfig() {
     if (!checks.length) throw PW.fieldError(input('ping'), 'Select at least one check for this service.');
     return {id:editor.dataset.id,name:input('name').value.trim(),host:input('host').value.trim(),enabled:input('enabled').checked,checks};
   });
+  value.network_policy = {suspect_after_failures: Number(form.elements.network_suspect.value),
+    down_after_failures: 3, recover_after_successes: Number(form.elements.network_recover.value)};
+  value.gateways.ntfy = {enabled: form.elements.ntfy_enabled.checked,
+    heartbeat_enabled: form.elements.ntfy_heartbeat_enabled.checked,
+    url: form.elements.ntfy_url.value.trim(), topic: form.elements.ntfy_topic.value,
+    heartbeat_topic: form.elements.ntfy_heartbeat_topic.value, tls_trust: form.elements.ntfy_tls_trust.value};
+  for (const field of ['username', 'password']) {
+    if (form.elements['ntfy_' + field].value) value.gateways.ntfy[field] = form.elements['ntfy_' + field].value;
+    if (form.elements['ntfy_' + field + '_clear'].checked) value.gateways.ntfy[field] = '';
+  }
   value.internet.enabled = form.elements.internet_enabled.checked;
   value.internet.targets = form.elements.internet_targets.value.split('\n').map(s => s.trim()).filter(Boolean).map(line => {
     const separator = line.lastIndexOf(':'); if (separator < 1) throw PW.fieldError(form.elements.internet_targets, 'Enter each Internet endpoint as IP:port.');
@@ -193,7 +216,7 @@ form.addEventListener('submit', async event => {
   event.preventDefault(); const button = document.getElementById('save-settings'); button.disabled = true;
   try {
     const value = readConfig();
-    const saved = await PW.request('/api/settings', {config:value,revision}, 'PUT');
+    const saved = await PW.request('/api/settings', {config:value,revision,acknowledge_heartbeat_disable:form.elements.ntfy_disable_ack.checked}, 'PUT');
     await load();
     const status = document.getElementById('save-status'); status.textContent = `Saved revision ${saved.revision}. Waiting for the monitor…`;
     PW.notice('Settings saved.', true);
@@ -258,3 +281,22 @@ for (const link of document.querySelectorAll('.settings-subnav a')) {
     }
   });
 }
+
+document.getElementById('test-ntfy').onclick = async event => {
+  const button = event.currentTarget;
+  const status = document.getElementById('ntfy-test-status'); button.disabled = true;
+  try {
+    const result = await PW.request('/api/ntfy/test', {});
+    status.textContent = 'Test queued. Waiting for the watchdog to attempt delivery.';
+    for (let attempt = 0; attempt < 20; attempt++) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      const maintenance = await PW.request('/api/maintenance/' + result.request_id);
+      if (maintenance.status === 'failed') {status.textContent = 'The watchdog could not queue the test. Check the saved ntfy settings.'; return;}
+      const report = await PW.request('/api/status');
+      const job = report.ntfy_deliveries?.find(item => item.id === result.request_id + ':ntfy');
+      if (job?.status === 'done') {status.textContent = 'VPS accepted the test. Please confirm receipt on your phone.'; return;}
+      if (job?.status === 'failed') {status.textContent = `Test delivery failed: ${job.error || 'unknown error'}. See delivery history.`; return;}
+    }
+    status.textContent = 'Test remains queued or retrying. Check delivery status on the overview.';
+  } catch (error) {PW.error(error);} finally {button.disabled = false;}
+};

@@ -11,7 +11,7 @@ import uuid
 from .config import validate_config, SECRET_FIELDS
 
 SETTINGS_PATH = os.environ.get('PIWATCH_SETTINGS_PATH', '/var/lib/piwatch-config/settings.sqlite3')
-MAINTENANCE_ACTIONS = {'clear_deliveries', 'clear_incidents', 'clear_all'}
+MAINTENANCE_ACTIONS = {'clear_deliveries', 'clear_incidents', 'clear_all', 'test_ntfy'}
 
 
 class ConflictError(ValueError):
@@ -70,7 +70,7 @@ class SettingsStore:
                     gateway = (config.setdefault('mqtt', {}) if name == 'mqtt' else
                                config.setdefault('gateways', {}).setdefault(name, {}))
                     previous_gateway = (previous.get('mqtt', {}) if name == 'mqtt' else
-                                        previous['gateways'][name])
+                                        previous.get('gateways', {}).get(name, {}))
                     for field in fields:
                         if field not in gateway and field in previous_gateway:
                             gateway[field] = previous_gateway[field]

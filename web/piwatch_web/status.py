@@ -22,6 +22,24 @@ def read_bridge_status(path):
         return None
 
 
+def read_heartbeat_status(path='/run/piwatch-heartbeat/status.json'):
+    allowed = {'state', 'enabled', 'activated', 'generated_at', 'boot_id',
+               'last_accepted_at', 'accepted_samples', 'attempted_samples', 'failed_samples', 'last_message_id',
+               'piwatch_fresh', 'error', 'interval_seconds', 'timeout_seconds'}
+    try:
+        raw = json.loads(Path(path).read_text())
+        value = {key: raw[key] for key in allowed if key in raw}
+        age = time.time() - float(value['generated_at'])
+        if value.get('boot_id') != boot_id() or not math.isfinite(age) or not 0 <= age <= 3:
+            value.update(state='STALE', error='Heartbeat publisher status is stale')
+        accepted = value.get('last_accepted_at')
+        value['acceptance_age_seconds'] = max(0, time.time() - accepted) if isinstance(accepted, (int, float)) else None
+        return value
+    except (OSError, ValueError, KeyError, TypeError):
+        return {'state': 'UNAVAILABLE', 'error': 'Heartbeat status unavailable',
+                'last_accepted_at': None, 'acceptance_age_seconds': None}
+
+
 def read_status(path, mqtt_status_path='/run/piwatch-ha-mqtt/status.json'):
     try:
         with Path(path).open(encoding='utf-8') as stream:
@@ -36,6 +54,7 @@ def read_status(path, mqtt_status_path='/run/piwatch-ha-mqtt/status.json'):
         data.update(available=True, fresh=fresh, age_seconds=max(0, age),
                     health_fresh=fresh and 0 <= health_age <= data['health_stale_after_seconds'])
         data['mqtt_bridge'] = read_bridge_status(mqtt_status_path)
+        data['ntfy_heartbeat'] = read_heartbeat_status()
         if not fresh:
             data['reason'] = 'Watchdog status is stale'
         return data

@@ -28,13 +28,21 @@ def write_status(results, trackers, outbox, health, config, started, path=STATUS
         'metrics': metrics or {},
         'ups_supervisor': ups_supervisor or {},
         'notifications': outbox.summary(),
+        'ntfy': {'enabled': config['gateways'].get('ntfy', {}).get('enabled', False)},
+        'probe_timing': {'service_interval_seconds': config['interval_seconds'],
+                         'external_interval_seconds': config['external_interval_seconds'],
+                         'note': 'Thresholds count distinct reports; probe deadlines and scheduling add latency.'},
         'notification_jobs': outbox.attention(),
+        'ntfy_deliveries': outbox.ntfy_deliveries(),
         'incidents': outbox.history(),
     }
     for name, tracker in trackers.items():
         result = {key: value for key, value in results[name].items() if key != 'sampled'}
         data['targets'][name] = {**result, 'name': tracker.display, 'state': tracker.state, 'failures': tracker.failures,
-                      'successes': tracker.successes, 'last_change': tracker.last_change,
+                      'successes': tracker.successes,
+                      'suspect_after_failures': tracker.suspect_after,
+                      'down_after_failures': tracker.down_after,
+                      'recover_after_successes': tracker.recover_after, 'last_change': tracker.last_change,
                       'down_since': tracker.down_since,
                       'outage_seconds': max(0, now - tracker.down_since) if tracker.down_since is not None else None,
                       'last_outage_seconds': tracker.last_outage_seconds}

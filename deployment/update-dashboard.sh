@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Update the installed watchdog package and web panel with guarded rollback.
 set -euo pipefail
+# A legacy bridge requires the coordinated first cutover, never a generic update.
+if [[ -f /etc/systemd/system/piwatch-ntfy.service && ! -f /etc/piwatch-ntfy-native/active ]]; then
+    echo 'Use deployment/install-native-ntfy.sh --maintenance-ack for the first native migration.' >&2
+    exit 1
+fi
 
 if [[ ${EUID} -ne 0 ]]; then
     echo 'Run with sudo from an interactive terminal.' >&2
@@ -263,5 +268,6 @@ systemctl is-active --quiet piwatch-ha-mqtt
 systemctl restart piwatch-oled
 systemctl is-active --quiet piwatch-oled
 
+bash "$PIWATCH_SOURCE/deployment/refresh-heartbeat-installation.sh"
 SERVICES_STOPPED=0
 printf 'Updated. Backup: %s\nPanel remains available on its configured bind, port 8080. OLED restarted.\n' "$PIWATCH_BACKUP"

@@ -195,6 +195,8 @@ const Dashboard = {
       if (typeof value.gpio_level === 'boolean') probes.push(element('span', `probe ${value.gpio_level ? 'probe-up' : 'probe-down'}`, `GPIO${value.gpio ?? 17} ${value.gpio_level ? 'HIGH' : 'LOW'}`));
       if (value.debouncing) probes.push(element('span', 'probe', 'Debouncing'));
       else if (value.available === false) probes.push(element('span', 'probe probe-down', 'Sensor unavailable'));
+      if (value.failures > 0 && value.down_after_failures) probes.push(element('span', 'probe', `Report ${value.failures}/${value.down_after_failures}`));
+      if (value.state === 'DOWN' && value.successes > 0) probes.push(element('span', 'probe', `Recovery ${value.successes}/${value.recover_after_successes}`));
       return probes;
     }
 
@@ -284,10 +286,36 @@ const Dashboard = {
         `${PW.age(Date.now() / 1000 - value.checked_at)} ago`,
         value.down_since ? PW.age(Date.now() / 1000 - value.down_since) : '—'
       ]);
-      return panel('Monitored services', `${targetCounts.value.total} configured`, [
+      return panel('Monitored services', `${targetCounts.value.total} configured · service ${snapshot.value?.probe_timing?.service_interval_seconds ?? '—'}s · Internet/DNS ${snapshot.value?.probe_timing?.external_interval_seconds ?? '—'}s`, [
         table(['Service', 'State', 'Probes', 'Last check', 'Outage'], rows, 'No monitored services are enabled.'),
         element('div', 'panel-footer', h('a', { href: '/settings' }, 'Manage checks →'))
       ], 'targets-panel');
+    }
+
+    function ntfyPanel() {
+      const heartbeat = snapshot.value?.ntfy_heartbeat || {};
+      const deliveries = snapshot.value?.ntfy_deliveries || [];
+      const counts = snapshot.value?.notifications?.ntfy || {pending: 0, done: 0, failed: 0};
+      const age = Number.isFinite(heartbeat.acceptance_age_seconds) ? PW.age(heartbeat.acceptance_age_seconds + elapsed.value) + ' ago' : 'Never';
+      const enabled = heartbeat.enabled || snapshot.value?.ntfy?.enabled;
+      const rows = deliveries.map(job => [job.id.slice(0, 12), statusPill(job.retrying ? 'RETRYING' : job.status),
+        job.attempts, job.accepted_at && job.status === 'done' ? PW.age(Date.now()/1000-job.accepted_at) + ' ago' : '—', job.error || '—']);
+      return element('details', 'ntfy-panel', [
+        element('summary', '', ['VPS reporting', element('span', 'muted', enabled ?
+          `Heartbeat ${heartbeat.state || 'UNAVAILABLE'} · ${counts.pending} pending (${counts.retrying || 0} retrying) · ${counts.failed} failed` : 'Disabled')]),
+        element('div', 'ntfy-content', [
+          element('dl', 'ntfy-health', [
+            element('div', '', [element('dt', '', 'Heartbeat enabled'), element('dd', '', heartbeat.enabled ? 'Yes' : 'No')]),
+            element('div', '', [element('dt', '', 'Last VPS acceptance'), element('dd', '', age)]),
+            element('div', '', [element('dt', '', 'Monitoring snapshot fresh'), element('dd', '', heartbeat.piwatch_fresh ? 'Yes' : 'No')]),
+            element('div', '', [element('dt', '', 'Heartbeat error'), element('dd', '', heartbeat.error || 'None')]),
+            element('div', '', [element('dt', '', 'Accepted alerts'), element('dd', '', counts.done)])
+          ]),
+          element('p', 'field-hint', 'Acceptance means the VPS accepted the message, not that a phone received it. Pending alerts retry independently; heartbeats are never replayed.'),
+          table(['Job', 'Status', 'Attempts', 'VPS acceptance', 'Error'], rows, 'No native ntfy delivery records.'),
+          element('div', 'panel-footer', h('a', {href: '/settings#ntfy'}, 'Configure ntfy or send a labelled test'))
+        ])
+      ]);
     }
 
     function operationsPanel() {
@@ -421,7 +449,7 @@ const Dashboard = {
             h('button', { class: 'secondary refresh-button', type: 'button', disabled: loading.value, onClick: refresh }, loading.value ? 'Refreshing…' : 'Refresh')
           ])
         ]), freshnessNotice(), summaryCards(),
-        element('div', 'dashboard-columns', [metricsPanel(), targetsPanel()])
+        element('div', 'dashboard-columns', [metricsPanel(), targetsPanel()]), ntfyPanel()
       ]);
     }
 

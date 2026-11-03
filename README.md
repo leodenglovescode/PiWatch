@@ -2,13 +2,13 @@
 
 PiWatch is a Raspberry Pi monitor for a home network. It checks services, Internet
 access, DNS, and power, then sends outage and recovery alerts through Meshtastic,
-Home Assistant, or email. A local dashboard and OLED show what is happening on the
+Home Assistant, ntfy, or email. A local dashboard and OLED show what is happening on the
 Pi itself.
 
 With a battery supply and a Meshtastic radio, it can keep monitoring and send radio
 alerts during an Internet or mains outage.
 
-![PiWatch dashboard showing service health, live system metrics, and power monitoring](docs/images/dashboard.png)
+![PiWatch dashboard showing system metrics, monitored services, and the expanded VPS reporting panel with heartbeat freshness and alert delivery status](docs/images/dashboard.png)
 
 ## What it does
 
@@ -18,6 +18,12 @@ alerts during an Internet or mains outage.
 - **Outage alerts.** LoRa and IP delivery run in the background. Queued alerts and
   delivery progress survive restarts; failed deliveries stay available for review.
   LoRa alerts wait for a destination acknowledgment and retry when needed.
+- **Off-site dead man's switch.** PiWatch sends a heartbeat to private ntfy once
+  per second, reporting whether its monitoring data is fresh. After the first
+  healthy heartbeat, the VPS alerts on three consecutive missing or invalid
+  samples and sends a recovery when a fresh heartbeat returns. The alert means
+  the Pi or its reporting path is unavailable. Detailed incidents stay queued
+  on the Pi during an internet outage and are retried when connectivity returns.
 - **Local dashboard.** Service status, incident history, delivery queues, and live
   CPU, memory, disk, temperature, and network metrics. Targets and settings can be
   changed in the panel without restarting the monitor.
@@ -47,6 +53,7 @@ Each component runs as its own systemd service.
 | Radio gateway | `lora/` | Meshtastic connection, delivery acknowledgments, radio queries |
 | OLED | `oled/` | Display pages, GPS/time information, power overlays |
 | Web panel | `web/` | Dashboard, settings, account management |
+| VPS heartbeat | `watchdog/piwatch-heartbeat.py` | Independent freshness reporting to private ntfy |
 | MQTT publisher | `watchdog/piwatch-ha-mqtt.py` | Home Assistant Discovery and sensor updates |
 
 Settings and incident state are stored in SQLite. Notification stages are
@@ -72,6 +79,7 @@ environments; review their paths and prerequisites before using them on another 
 
 - [Installation and web panel setup](deployment/WEB_PANEL.md)
 - [Notification delivery, UPS testing, and recovery](deployment/README.md)
+- [ntfy integration, controlled cutover, and Mac verification](deployment/NTFY.md)
 - [Private configuration and environment files](deployment/PRIVATE_CONFIGURATION.md)
 
 Keep passwords, tokens, real network addresses, and device selections in the

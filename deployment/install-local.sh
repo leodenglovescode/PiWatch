@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Install only on this Pi, from the local checkout. Never upload repository files.
 set -euo pipefail
+# A legacy bridge requires the coordinated first cutover, never a generic update.
+if [[ -f /etc/systemd/system/piwatch-ntfy.service && ! -f /etc/piwatch-ntfy-native/active ]]; then
+    echo 'Use deployment/install-native-ntfy.sh --maintenance-ack for the first native migration.' >&2
+    exit 1
+fi
 if [[ ${EUID} -ne 0 ]]; then
     echo 'Run with sudo from an interactive terminal.' >&2
     exit 1
@@ -62,6 +67,14 @@ id piwatch-mqtt >/dev/null 2>&1 || useradd --system --user-group --home-dir /var
 usermod -a -G piwatch-config piwatch
 usermod -a -G piwatch-config piwatch-web
 usermod -a -G piwatch-config piwatch-mqtt
+id piwatch-heartbeat >/dev/null 2>&1 || useradd --system --user-group --no-create-home --shell /usr/sbin/nologin piwatch-heartbeat
+usermod -a -G piwatch-config piwatch-heartbeat
+install -d -o root -g root -m 0755 /etc/piwatch-ntfy-native
+# New installations have no bridge to hand over. Publishing is disabled in defaults.
+if [[ ! -f /etc/piwatch-ntfy-native/active ]]; then
+    install -o root -g root -m 0644 /dev/null /etc/piwatch-ntfy-native/active
+fi
+
 install -d -o piwatch-web -g piwatch-config -m 2770 /var/lib/piwatch-config
 install -d -o piwatch-web -g piwatch-web -m 0700 /var/lib/piwatch-web
 if [[ ! -x /opt/piwatch-web/bin/python ]]; then
@@ -83,6 +96,7 @@ stage = Path(sys.argv[1])
 shutil.copytree('watchdog/piwatch', stage / 'piwatch', ignore=shutil.ignore_patterns('__pycache__'))
 shutil.copy2('watchdog/piwatchd.py', stage / 'piwatchd.py')
 shutil.copy2('watchdog/piwatch-ha-mqtt.py', stage / 'piwatch-ha-mqtt.py')
+shutil.copy2('watchdog/piwatch-heartbeat.py', stage / 'piwatch-heartbeat.py')
 shutil.copytree('web', stage / 'web', ignore=shutil.ignore_patterns('__pycache__'))
 PY
 # Initialize only the new settings DB from the existing nonsecret JSON.
@@ -104,10 +118,11 @@ systemctl stop piwatch
 systemctl stop piwatch-ha-mqtt.service 2>/dev/null || true
 systemctl stop piwatch-web.service 2>/dev/null || true
 install -d -m 0755 /usr/local/lib/piwatch
-cp -a "$PIWATCH_STAGE/piwatch" "$PIWATCH_STAGE/piwatchd.py" "$PIWATCH_STAGE/piwatch-ha-mqtt.py" "$PIWATCH_STAGE/web" /usr/local/lib/piwatch/
+cp -a "$PIWATCH_STAGE/piwatch" "$PIWATCH_STAGE/piwatchd.py" "$PIWATCH_STAGE/piwatch-ha-mqtt.py" "$PIWATCH_STAGE/piwatch-heartbeat.py" "$PIWATCH_STAGE/web" /usr/local/lib/piwatch/
 install -m 0644 deployment/piwatch.service /etc/systemd/system/piwatch.service
 install -m 0644 deployment/piwatch-web.service /etc/systemd/system/piwatch-web.service
 install -m 0644 deployment/piwatch-ha-mqtt.service /etc/systemd/system/piwatch-ha-mqtt.service
+install -m 0644 deployment/piwatch-heartbeat.service /etc/systemd/system/piwatch-heartbeat.service
 install -d -m 0755 /etc/systemd/system/piwatch.service.d
 install -m 0644 deployment/piwatch-config.conf /etc/systemd/system/piwatch.service.d/config.conf
 visudo -cf deployment/piwatch-poweroff.sudoers
@@ -117,6 +132,7 @@ systemctl daemon-reload
 systemctl restart lora-notifyd
 systemctl start piwatch
 systemctl enable --now piwatch-ha-mqtt
+systemctl enable --now piwatch-heartbeat
 systemctl restart piwatch-oled
 systemctl enable --now piwatch-web
 systemctl is-active piwatch piwatch-ha-mqtt lora-notifyd piwatch-oled piwatch-web
