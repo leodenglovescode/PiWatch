@@ -290,3 +290,71 @@ tbody tr:hover { background: var(--surface-soft); }
 .ntfy-health { display: flex; flex-wrap: wrap; gap: 12px 28px; margin: 0 0 12px; }
 .ntfy-health dt { color: var(--muted); font-size: .82rem; }
 .ntfy-health dd { margin: 3px 0 0; font-size: .93rem; }
+
+/* Liquid Glass follows the system palette and keeps controls and status text opaque. */
+:root[data-theme-preference="glass"] {
+  --glass-wash: #c6dbef;
+  --glass-chrome: #e5eef8;
+  --glass-panel-opacity: 82%;
+  --glass-menu-opacity: 72%;
+  --glass-blur: 16px;
+  --glass-edge: #fff;
+  --glass-shadow: #23426226;
+}
+:root[data-theme-preference="glass"][data-theme="dark"] {
+  --glass-wash: #23394f;
+  --glass-chrome: #202d3d;
+  --glass-edge: #ffffff26;
+  --glass-shadow: #0005;
+}
+[data-theme-preference="glass"] body {
+  background: radial-gradient(ellipse at top right, var(--glass-wash), transparent 65%), var(--bg);
+}
+[data-theme-preference="glass"] :is(.dashboard-panel, .settings-section, .account-layout > section, .login-box, .ntfy-panel, .save-bar) {
+  background: var(--surface);
+  background: color-mix(in srgb, var(--surface) var(--glass-panel-opacity), transparent);
+  border-radius: 14px;
+  box-shadow: inset 0 1px var(--glass-edge), 0 4px 18px var(--glass-shadow);
+}
+[data-theme-preference="glass"] :is(.app-masthead, .app-sidebar) {
+  color: var(--ink);
+  border-color: var(--line);
+  background: var(--glass-chrome);
+  background: color-mix(in srgb, var(--glass-chrome) var(--glass-panel-opacity), transparent);
+  -webkit-backdrop-filter: blur(var(--glass-blur));
+  backdrop-filter: blur(var(--glass-blur));
+  box-shadow: inset 0 1px var(--glass-edge);
+}
+[data-theme-preference="glass"] :is(.brand, .app-masthead button.quiet, .app-sidebar nav a) {
+  color: var(--ink-strong);
+}
+[data-theme-preference="glass"] :is(.app-masthead, .app-sidebar) :focus-visible {
+  outline-color: var(--accent);
+}
+[data-theme-preference="glass"] :is(.app-masthead button:hover, .app-sidebar nav a:hover, .app-sidebar nav a[aria-current]) {
+  background: var(--accent-soft);
+  background: color-mix(in srgb, var(--accent-soft) var(--glass-menu-opacity), transparent);
+  color: var(--ink-strong);
+}
+[data-theme-preference="glass"] .app-sidebar nav a[aria-current] {
+  border-color: var(--accent);
+}
+[data-theme-preference="glass"] .app-sidebar .settings-subnav {
+  border-color: var(--line);
+}
+[data-theme-preference="glass"] :is(button, input, select, textarea) {
+  border-radius: 8px;
+}
+[data-theme-preference="glass"] .app-masthead button {
+  border-radius: 999px;
+}
+[data-theme-preference="glass"] .target-editor {
+  background: transparent;
+}
+@media (prefers-reduced-transparency: reduce) {
+  :root[data-theme-preference="glass"] {
+    --glass-panel-opacity: 100%;
+    --glass-menu-opacity: 100%;
+    --glass-blur: 0px;
+  }
+}

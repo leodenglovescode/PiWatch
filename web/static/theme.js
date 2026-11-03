@@ -1,7 +1,10 @@
 'use strict';
-(function () {
-  const stored = localStorage.getItem('piwatch-theme') || 'light';
-  const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
-  document.documentElement.dataset.theme = stored === 'system' ? (dark ? 'dark' : 'light') : stored;
-  document.documentElement.dataset.themePreference = stored;
-}());
+
+function setThemeAttributes(preference) {
+  const systemTheme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+  const root = document.documentElement;
+  root.dataset.theme = preference === 'system' || preference === 'glass' ? systemTheme : preference;
+  root.dataset.themePreference = preference;
+}
+
+setThemeAttributes(localStorage.getItem('piwatch-theme') || 'light');

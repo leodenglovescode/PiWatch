@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Update the overview's static files without restarting the web service.
+# Update dashboard or theme assets without restarting the web service.
 set -euo pipefail
 
 if [[ ${EUID} -ne 0 ]]; then
@@ -11,7 +11,13 @@ PIWATCH_SOURCE=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 PIWATCH_STATIC=/usr/local/lib/piwatch/web/static
 PIWATCH_BACKUP="/var/backups/piwatch/$(date +%Y%m%d-%H%M%S)-dashboard-assets-$$"
 
-for asset in style.css dashboard.js; do
+case "${1:-}" in
+    '') assets=(style.css dashboard.js) ;;
+    --theme) assets=(style.css theme.js common.js) ;;
+    *) echo 'Usage: update-dashboard-assets.sh [--theme]' >&2; exit 2 ;;
+esac
+
+for asset in "${assets[@]}"; do
     [[ -f "$PIWATCH_SOURCE/web/static/$asset" && -f "$PIWATCH_STATIC/$asset" ]] || {
         echo "Missing dashboard asset: $asset" >&2
         exit 1
@@ -19,7 +25,7 @@ for asset in style.css dashboard.js; do
 done
 systemctl is-active --quiet piwatch-web
 install -d -o root -g root -m 0700 "$PIWATCH_BACKUP"
-for asset in style.css dashboard.js; do
+for asset in "${assets[@]}"; do
     cp -a -- "$PIWATCH_STATIC/$asset" "$PIWATCH_BACKUP/$asset"
 done
 
@@ -30,7 +36,7 @@ cleanup() {
     set +e
     if (( result != 0 && APPLIED == 1 )); then
         echo 'Asset verification failed; restoring the previous dashboard.' >&2
-        for asset in style.css dashboard.js; do
+        for asset in "${assets[@]}"; do
             cp -a -- "$PIWATCH_BACKUP/$asset" "$PIWATCH_STAGE/$asset"
             mv -f -- "$PIWATCH_STAGE/$asset" "$PIWATCH_STATIC/$asset"
         done
@@ -40,14 +46,14 @@ cleanup() {
 }
 trap cleanup EXIT
 
-for asset in style.css dashboard.js; do
+for asset in "${assets[@]}"; do
     install -o root -g root -m 0644 "$PIWATCH_SOURCE/web/static/$asset" "$PIWATCH_STAGE/$asset"
 done
 APPLIED=1
-for asset in style.css dashboard.js; do
+for asset in "${assets[@]}"; do
     mv -f -- "$PIWATCH_STAGE/$asset" "$PIWATCH_STATIC/$asset"
 done
-for asset in style.css dashboard.js; do
+for asset in "${assets[@]}"; do
     curl --fail --silent --show-error --noproxy '*' --connect-timeout 3 --max-time 10 \
         "http://127.0.0.1:8080/static/$asset" -o "$PIWATCH_STAGE/served-$asset"
     cmp -- "$PIWATCH_SOURCE/web/static/$asset" "$PIWATCH_STAGE/served-$asset"
