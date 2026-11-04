@@ -160,6 +160,8 @@ def rollback(backup):
         shutil.copytree(backup/name, current)
     shutil.copy2(backup/'piwatchd.py', INSTALL/'piwatchd.py')
     systemctl('start', 'piwatch', 'piwatch-web')
+    if active('piwatch-ha-mqtt'):
+        systemctl('restart', 'piwatch-ha-mqtt')
     print('Rollback restored the previous PiWatch code/configuration and legacy bridge. Native-only jobs retained privately.')
 
 
@@ -252,6 +254,9 @@ def install(source, maintenance_ack):
             command('runuser', '-u', user, '--', '/usr/bin/python3', str(INSTALL/'piwatch-heartbeat.py'), '--check-config')
         systemctl('daemon-reload')
         systemctl('start', 'piwatch', 'piwatch-web')
+        # The MQTT process imports the shared settings validator and must reload it.
+        if active('piwatch-ha-mqtt'):
+            systemctl('restart', 'piwatch-ha-mqtt')
         systemctl('enable', '--now', 'piwatch-heartbeat')
         wait_for(lambda: healthy_snapshot().get('monitor', {}).get('settings_revision') == revision,
                  15, 'New watchdog did not produce fresh healthy status')
